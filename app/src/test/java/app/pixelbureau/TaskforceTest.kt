@@ -602,4 +602,13 @@ class TaskforceRoomTest {
         assertEquals(listOf("a", "b"), crew.map { it.id })
         assertEquals("chars/m3_idle", app.pixelbureau.logic.spriteFrame("m3", "idle", 0))
     }
+
+    @Test
+    fun roleCategoryFromDuties() {
+        assertEquals(app.pixelbureau.logic.RoleCategory.Engineering, app.pixelbureau.logic.RoleCategory.of("Backend engineer. Ships APIs."))
+        assertEquals(app.pixelbureau.logic.RoleCategory.Design, app.pixelbureau.logic.RoleCategory.of("UI designer for the app"))
+        assertEquals(app.pixelbureau.logic.RoleCategory.Research, app.pixelbureau.logic.RoleCategory.of("Data analyst"))
+        assertEquals(app.pixelbureau.logic.RoleCategory.General, app.pixelbureau.logic.RoleCategory.of(""))
+        assertEquals(app.pixelbureau.logic.RoleCategory.General, app.pixelbureau.logic.RoleCategory.of("Builds things"))
+    }
 }

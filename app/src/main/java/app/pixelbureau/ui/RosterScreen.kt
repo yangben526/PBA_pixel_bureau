@@ -1,5 +1,7 @@
 package app.pixelbureau.ui
 
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.activity.compose.BackHandler
 
 import android.graphics.BitmapFactory
@@ -111,6 +113,7 @@ fun RosterScreen(model: BureauViewModel, modifier: Modifier = Modifier, onOpenOf
     var bindingAgent by remember { mutableStateOf<Agent?>(null) }
     var mcpAgent by remember { mutableStateOf<Agent?>(null) }
     var pendingDelete by remember { mutableStateOf<Task?>(null) }
+    var roleFilter by remember { mutableStateOf<app.pixelbureau.logic.RoleCategory?>(null) }
     var desk by remember { mutableStateOf(if (startOnBureau) CompanyDesk.Bureau else CompanyDesk.Hr) }
     var bureauStack by remember { mutableStateOf(listOf<String>()) }
     var bureauQuery by remember { mutableStateOf("") }
@@ -289,11 +292,22 @@ fun RosterScreen(model: BureauViewModel, modifier: Modifier = Modifier, onOpenOf
             accent = KaiPeach,
             title = "Team",
             emoji = "👥",
+            trailing = { SoftBadge(label = "${active.size}", face = Color.White.copy(alpha = 0.7f), ink = KaiInk) },
         ) {
             if (active.isEmpty()) {
                 EmptyHint("The office is empty. Open PixelHire to bring someone in.")
             }
-            for (agent in active) {
+            val cats = active.map { app.pixelbureau.logic.RoleCategory.of(it.duties) }.distinct().sortedBy { it.ordinal }
+            if (cats.size > 1) {
+                androidx.compose.foundation.lazy.LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    item { ChoiceChip("All ${active.size}", roleFilter == null) { roleFilter = null } }
+                    items(cats.size) { k ->
+                        val c = cats[k]
+                        ChoiceChip("${c.icon} ${c.label} ${active.count { app.pixelbureau.logic.RoleCategory.of(it.duties) == c }}", roleFilter == c) { roleFilter = c }
+                    }
+                }
+            }
+            for (agent in active.filter { roleFilter == null || app.pixelbureau.logic.RoleCategory.of(it.duties) == roleFilter }) {
                 val boundId = ui.agentModelIds[agent.id]
                 val bound = ui.models.firstOrNull { it.id == boundId }
                 val llmLabel = when {
@@ -764,6 +778,7 @@ internal fun KaiPanel(
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 private fun AgentTile(
     agent: Agent,
@@ -777,84 +792,71 @@ private fun AgentTile(
     onFire: () -> Unit,
 ) {
     val lookLabel = looks.firstOrNull { it.first == agent.spriteKey }?.second ?: agent.spriteKey
+    val cat = app.pixelbureau.logic.RoleCategory.of(agent.duties)
+    val role = agent.duties.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }
+    val tint = Color(cat.tint)
+    val (dot, statusLabel) = when (agent.status) {
+        "working", "typing" -> Color(0xFF34A853) to "Working"
+        "walking" -> Color(0xFF4A90E2) to "Walking"
+        "done" -> Color(0xFF34A853) to "Done"
+        else -> Color(0xFFB0B7C0) to "Idle"
+    }
     Column(
         Modifier
             .fillMaxWidth()
+            .shadow(3.dp, KaiTileShape, ambientColor = KaiBorderDeep.copy(alpha = 0.3f), spotColor = KaiBorderDeep.copy(alpha = 0.3f))
             .clip(KaiTileShape)
-            .background(KaiCardNest)
+            .background(Brush.verticalGradient(listOf(tint.copy(alpha = 0.22f), KaiCardNest, KaiCardNest)))
             .border(1.5.dp, KaiBorder, KaiTileShape)
             .padding(10.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp),
     ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            // Cute pixel avatar well
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
             Box(
-                Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(KaiSky)
-                    .border(1.5.dp, KaiBorderDeep, RoundedCornerShape(12.dp)),
+                Modifier.size(56.dp).clip(RoundedCornerShape(14.dp))
+                    .background(Brush.verticalGradient(listOf(Color.White, tint.copy(alpha = 0.35f))))
+                    .border(1.5.dp, KaiBorderDeep, RoundedCornerShape(14.dp)),
                 contentAlignment = Alignment.Center,
             ) {
                 if (spriteBitmap != null) {
-                    Image(
-                        bitmap = spriteBitmap.asImageBitmap(),
-                        contentDescription = agent.name,
-                        contentScale = ContentScale.Fit,
-                        filterQuality = FilterQuality.None,
-                        modifier = Modifier.size(36.dp),
-                    )
+                    Image(spriteBitmap.asImageBitmap(), agent.name, contentScale = ContentScale.Fit, filterQuality = FilterQuality.None, modifier = Modifier.size(48.dp))
                 } else {
                     Text(lookLabel.take(1), color = KaiInk, fontWeight = FontWeight.Bold)
                 }
+                Box(
+                    Modifier.align(Alignment.TopEnd).padding(3.dp).size(10.dp).clip(CircleShape).background(dot)
+                        .border(1.5.dp, Color.White, CircleShape).semantics { contentDescription = statusLabel },
+                )
             }
-            Column(Modifier.weight(1f)) {
-                Text(
-                    agent.name,
-                    color = KaiInk,
-                    fontWeight = FontWeight.SemiBold,
-                    style = MaterialTheme.typography.titleMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    lookLabel,
-                    color = KaiInkMuted,
-                    style = MaterialTheme.typography.bodySmall,
-                )
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(agent.name, color = KaiInk, fontWeight = FontWeight.Bold, fontSize = 16.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        "${cat.icon} ${cat.label}", color = KaiInk, fontSize = 10.sp, fontWeight = FontWeight.Bold,
+                        modifier = Modifier.clip(RoundedCornerShape(50)).background(tint.copy(alpha = 0.35f))
+                            .border(1.dp, tint, RoundedCornerShape(50)).padding(horizontal = 7.dp, vertical = 1.dp),
+                    )
+                    Text("$statusLabel · $lookLabel", color = KaiInkMuted, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+                if (role != null) Text(role, color = KaiInkMuted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
         }
         if (agent.personality.isNotBlank()) {
-            Text(
-                agent.personality,
-                color = KaiInkMuted,
-                style = MaterialTheme.typography.bodySmall,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Text(agent.personality, color = KaiInkMuted, style = MaterialTheme.typography.bodySmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
-        // BYOK model chip — tap opens picker
-        SoftBadge(
-            label = "LLM · $llmLabel",
-            face = if (hasBound) KaiButter else KaiPeach,
-            ink = if (hasBound) KaiAccentLo else KaiInk,
-            onClick = onModel,
-        )
-        if (mcpLabel != null) {
-            SoftBadge(
-                label = "MCP · $mcpLabel",
-                face = KaiMint,
-                ink = KaiInk,
-                onClick = onMcp,
-            )
+        androidx.compose.foundation.layout.FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+        ) {
+            SoftBadge(label = "🧠 $llmLabel", face = if (hasBound) KaiButter else KaiPeach, ink = if (hasBound) KaiAccentLo else KaiInk, onClick = onModel)
+            if (mcpLabel != null) SoftBadge(label = "🔌 MCP · $mcpLabel", face = KaiMint, ink = KaiInk, onClick = onMcp)
         }
+        Box(Modifier.fillMaxWidth().height(1.dp).background(KaiBorder.copy(alpha = 0.5f)))
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
             SoftActionChip("Edit", onEdit)
             SoftActionChip("Model", onModel)
             if (mcpLabel != null) SoftActionChip("MCP", onMcp)
+            Spacer(Modifier.weight(1f))
             SoftActionChip("Fire", onFire, danger = true)
         }
     }

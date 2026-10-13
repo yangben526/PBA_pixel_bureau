@@ -22,8 +22,8 @@ android {
         applicationId = "app.pixelbureau"
         minSdk = 26
         targetSdk = 35
-        versionCode = 194
-        versionName = "0.1.127"
+        versionCode = 195
+        versionName = "0.1.128"
     }
 
     buildTypes {
