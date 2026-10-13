@@ -1,0 +1,517 @@
+#!/usr/bin/env python3
+"""Generate startup-office isometric prop sprites (magenta-keyed) for PBA_pixel_bureau.
+
+Style notes matched to existing media/sprites/props:
+- Magenta (#FF00FF) backdrop for SpriteStore keyAndCrop
+- 2:1 isometric boxes with dark outlines, top-left lighting
+- ~1024 canvas, object fills most of frame (feet near bottom)
+"""
+from __future__ import annotations
+
+import math
+import os
+from pathlib import Path
+
+from PIL import Image, ImageDraw
+
+ROOT = Path(__file__).resolve().parents[1]
+OUT = ROOT / "media" / "sprites" / "props"
+PREVIEW = ROOT / ".sprite_preview" / "startup_props"
+MAGENTA = (255, 0, 255, 255)
+OUTLINE = (22, 18, 28, 255)
+
+
+def lerp(a, b, t):
+    return tuple(int(a[i] + (b[i] - a[i]) * t) for i in range(3)) + (255,)
+
+
+def shade(rgb, factor):
+    return tuple(max(0, min(255, int(c * factor))) for c in rgb[:3]) + (255,)
+
+
+def iso_pt(gx, gy, gz, ox, oy, s=28):
+    """Map grid (x right, y back, z up) to screen pixels. 2:1 iso."""
+    sx = ox + (gx - gy) * s
+    sy = oy + (gx + gy) * (s * 0.5) - gz * s
+    return sx, sy
+
+
+def draw_iso_box(draw, gx, gy, gz, w, d, h, ox, oy, s, top, left, right, outline=OUTLINE):
+    """Draw an isometric box. gx,gy,gz = origin of min corner; w,d,h extents."""
+    # 8 corners
+    def P(x, y, z):
+        return iso_pt(gx + x, gy + y, gz + z, ox, oy, s)
+
+    # bottom face corners (not usually drawn)
+    # top face: z=h
+    t00 = P(0, 0, h)
+    t10 = P(w, 0, h)
+    t11 = P(w, d, h)
+    t01 = P(0, d, h)
+    # vertical drops to bottom of each visible face
+    b10 = P(w, 0, 0)
+    b11 = P(w, d, 0)
+    b01 = P(0, d, 0)
+    b00 = P(0, 0, 0)
+
+    # Left face (toward -x camera-left / +y back) — use left color; visible: 00-01-11? 
+    # In our iso, visible faces are typically: top, +x (right), +y (left-ish)
+    # Right face (+x): t10, t11, b11, b10
+    draw.polygon([t10, t11, b11, b10], fill=right)
+    # Left/back face (+y): t01, t11, b11, b01
+    draw.polygon([t01, t11, b11, b01], fill=left)
+    # Top
+    draw.polygon([t00, t10, t11, t01], fill=top)
+    # Outlines
+    draw.line([t00, t10, t11, t01, t00], fill=outline, width=2)
+    draw.line([t10, b10], fill=outline, width=2)
+    draw.line([t11, b11], fill=outline, width=2)
+    draw.line([t01, b01], fill=outline, width=2)
+    draw.line([b10, b11, b01], fill=outline, width=2)
+    return {"t00": t00, "t10": t10, "t11": t11, "t01": t01, "b10": b10, "b11": b11, "b01": b01, "b00": b00}
+
+
+def draw_iso_prism_poly(draw, pts_top, drop, fill_top, fill_side, outline=OUTLINE):
+    """pts_top: list of (x,y) screen points clockwise; drop: vertical pixel drop."""
+    bot = [(p[0], p[1] + drop) for p in pts_top]
+    # sides between consecutive
+    n = len(pts_top)
+    for i in range(n):
+        j = (i + 1) % n
+        # only draw sides that face camera roughly (lower half of diamond)
+        draw.polygon([pts_top[i], pts_top[j], bot[j], bot[i]], fill=fill_side)
+    draw.polygon(pts_top, fill=fill_top)
+    draw.line(pts_top + [pts_top[0]], fill=outline, width=2)
+    for i in range(n):
+        draw.line([pts_top[i], bot[i]], fill=outline, width=2)
+    draw.line(bot + [bot[0]], fill=outline, width=2)
+
+
+def new_canvas(size=1024):
+    return Image.new("RGBA", (size, size), MAGENTA)
+
+
+def save(im: Image.Image, name: str):
+    OUT.mkdir(parents=True, exist_ok=True)
+    PREVIEW.mkdir(parents=True, exist_ok=True)
+    path = OUT / f"{name}.png"
+    # Store as RGB magenta-keyed (match existing props)
+    rgb = Image.new("RGB", im.size, (255, 0, 255))
+    rgb.paste(im, mask=im.split()[3])
+    rgb.save(path)
+    # preview with checker
+    keyed = im.copy()
+    prev = keyed.resize((min(400, keyed.width), min(400, keyed.height) * keyed.height // max(1, keyed.width)), Image.NEAREST) if False else keyed
+    # crop non-magenta
+    px = rgb.load()
+    w, h = rgb.size
+    minx, miny, maxx, maxy = w, h, -1, -1
+    for y in range(h):
+        for x in range(w):
+            r, g, b = px[x, y]
+            if not (r > 200 and b > 200 and g < 80):
+                minx = min(minx, x)
+                miny = min(miny, y)
+                maxx = max(maxx, x)
+                maxy = max(maxy, y)
+    if maxx >= minx:
+        crop = rgb.crop((minx, miny, maxx + 1, maxy + 1))
+        # scale to ~360
+        sc = 360 / max(crop.width, crop.height)
+        nw, nh = max(1, int(crop.width * sc)), max(1, int(crop.height * sc))
+        big = crop.resize((nw, nh), Image.NEAREST)
+        bg = Image.new("RGB", big.size, (45, 45, 52))
+        # make magenta transparent-ish dark
+        bp = big.load()
+        for y in range(nh):
+            for x in range(nw):
+                r, g, b = bp[x, y]
+                if r > 200 and b > 200 and g < 80:
+                    bp[x, y] = (45, 45, 52) if ((x // 12) + (y // 12)) % 2 == 0 else (60, 60, 70)
+        big.save(PREVIEW / f"{name}.png")
+    print(f"wrote {path} ({rgb.size})")
+
+
+# ---------------- individual props ----------------
+
+def gen_whiteboard():
+    im = new_canvas()
+    d = ImageDraw.Draw(im)
+    ox, oy, s = 512, 620, 26
+    # stand / easel legs
+    wood = (120, 78, 48)
+    wood_d = shade(wood, 0.7)
+    wood_l = shade(wood, 1.15)
+    # board frame (tall thin along y, facing camera)
+    # frame box
+    draw_iso_box(d, -0.15, -2.4, 1.2, 0.35, 4.8, 3.6, ox, oy, s,
+                 top=shade((210, 205, 195), 1.0),
+                 left=shade((90, 90, 95), 0.95),
+                 right=shade((70, 70, 78), 1.0))
+    # white surface inset on +x face — draw as flat quad on right face
+    # Approximate whiteboard face polygon
+    def P(x, y, z):
+        return iso_pt(x, y, z, ox, oy, s)
+    face = [P(0.22, -2.2, 4.6), P(0.22, 2.2, 4.6), P(0.22, 2.2, 1.5), P(0.22, -2.2, 1.5)]
+    d.polygon(face, fill=(248, 248, 252, 255))
+    d.line(face + [face[0]], fill=OUTLINE, width=2)
+    # sticky notes / scribbles
+    notes = [
+        ((-1.6, 3.8), (255, 220, 90)),
+        ((-0.6, 4.0), (120, 210, 255)),
+        ((0.5, 3.7), (255, 140, 180)),
+        ((1.4, 3.9), (160, 255, 160)),
+        ((-1.2, 2.8), (255, 200, 120)),
+        ((0.2, 2.6), (200, 180, 255)),
+        ((1.2, 2.9), (255, 255, 140)),
+    ]
+    for (gy, gz), col in notes:
+        q = [P(0.24, gy, gz), P(0.24, gy + 0.55, gz), P(0.24, gy + 0.55, gz - 0.55), P(0.24, gy, gz - 0.55)]
+        d.polygon(q, fill=col + (255,))
+        d.line(q + [q[0]], fill=shade(col, 0.55), width=1)
+    # marker tray
+    draw_iso_box(d, 0.0, -1.5, 1.15, 0.5, 3.0, 0.18, ox, oy, s,
+                 top=shade((60, 60, 68), 1.1), left=shade((40, 40, 48), 1.0), right=shade((35, 35, 42), 1.0))
+    # markers
+    for i, col in enumerate([(40, 40, 45), (220, 50, 60), (40, 100, 220), (30, 160, 80)]):
+        draw_iso_box(d, 0.15, -1.2 + i * 0.7, 1.33, 0.12, 0.45, 0.12, ox, oy, s,
+                     top=shade(col, 1.2), left=shade(col, 0.85), right=shade(col, 0.7))
+    # easel feet
+    draw_iso_box(d, -0.6, -2.6, 0, 1.4, 0.35, 0.2, ox, oy, s, top=wood_l, left=wood_d, right=wood)
+    draw_iso_box(d, -0.6, 2.2, 0, 1.4, 0.35, 0.2, ox, oy, s, top=wood_l, left=wood_d, right=wood)
+    save(im, "whiteboard")
+
+
+def gen_beanbag():
+    im = new_canvas()
+    d = ImageDraw.Draw(im)
+    ox, oy, s = 512, 700, 32
+    # lumpy beanbag as stacked iso discs / flattened spheres approximation via polygons
+    base = (255, 110, 70)  # coral/orange startup vibe
+    mid = shade(base, 0.85)
+    dark = shade(base, 0.65)
+    light = shade(base, 1.12)
+    # bottom blob
+    def blob(cx, cy, cz, rx, ry, rz, col_top, col_side):
+        pts = []
+        for i in range(16):
+            a = i / 16 * math.tau
+            pts.append(iso_pt(cx + math.cos(a) * rx, cy + math.sin(a) * ry, cz + rz * 0.15 * abs(math.cos(a * 2)), ox, oy, s))
+        # side drop
+        bot = [(p[0], p[1] + rz * s * 0.85) for p in pts]
+        for i in range(16):
+            j = (i + 1) % 16
+            d.polygon([pts[i], pts[j], bot[j], bot[i]], fill=col_side)
+        d.polygon(pts, fill=col_top)
+        d.line(pts + [pts[0]], fill=OUTLINE, width=2)
+
+    blob(0, 0, 0.2, 2.2, 2.0, 1.1, light, dark)
+    blob(0.1, -0.1, 1.0, 1.7, 1.55, 0.9, light, mid)
+    # highlight dimple
+    hx, hy = iso_pt(-0.4, -0.5, 1.7, ox, oy, s)
+    d.ellipse([hx - 18, hy - 10, hx + 30, hy + 14], fill=shade(base, 1.25))
+    # floor shadow hint (darker magenta-safe)
+    save(im, "beanbag")
+
+
+def gen_watercooler():
+    im = new_canvas()
+    d = ImageDraw.Draw(im)
+    ox, oy, s = 512, 720, 30
+    body = (235, 235, 240)
+    body_l = shade(body, 0.82)
+    body_r = shade(body, 0.7)
+    # base cabinet
+    draw_iso_box(d, -1.0, -0.9, 0, 2.0, 1.8, 2.4, ox, oy, s,
+                 top=shade((200, 200, 208), 1.0), left=body_l, right=body_r)
+    # door seam
+    def P(x, y, z):
+        return iso_pt(x, y, z, ox, oy, s)
+    d.line([P(1.0, -0.85, 2.2), P(1.0, -0.85, 0.2)], fill=shade((150, 150, 160), 0.9), width=2)
+    # drip tray
+    draw_iso_box(d, -0.7, -0.7, 2.4, 1.4, 1.4, 0.15, ox, oy, s,
+                 top=shade((80, 80, 90), 1.1), left=shade((50, 50, 58), 1), right=shade((40, 40, 48), 1))
+    # blue water bottle (cylinder approx as box + dome)
+    blue = (70, 160, 220)
+    draw_iso_box(d, -0.75, -0.7, 2.55, 1.5, 1.4, 2.2, ox, oy, s,
+                 top=shade(blue, 1.25), left=shade(blue, 0.85), right=shade(blue, 0.7))
+    # water highlight
+    d.polygon([P(-0.5, -0.5, 4.5), P(-0.2, -0.5, 4.5), P(-0.2, -0.5, 3.0), P(-0.5, -0.5, 3.0)],
+              fill=shade(blue, 1.45))
+    # bottle neck
+    draw_iso_box(d, -0.25, -0.25, 4.75, 0.5, 0.5, 0.35, ox, oy, s,
+                 top=shade((180, 220, 240), 1.1), left=shade(blue, 0.8), right=shade(blue, 0.65))
+    # spigots
+    for gy in (-0.35, 0.35):
+        draw_iso_box(d, 0.95, gy, 2.0, 0.35, 0.25, 0.2, ox, oy, s,
+                     top=shade((60, 60, 70), 1.2), left=shade((40, 40, 48), 1), right=shade((30, 30, 38), 1))
+    # cups
+    draw_iso_box(d, 0.3, 0.4, 2.55, 0.45, 0.45, 0.55, ox, oy, s,
+                 top=(250, 250, 255, 255), left=shade((220, 220, 230), 0.9), right=shade((200, 200, 210), 0.85))
+    save(im, "watercooler")
+
+
+def gen_fridge():
+    im = new_canvas()
+    d = ImageDraw.Draw(im)
+    ox, oy, s = 512, 700, 28
+    red = (220, 55, 65)  # snack fridge pop color
+    draw_iso_box(d, -1.1, -1.0, 0, 2.2, 2.0, 4.2, ox, oy, s,
+                 top=shade((190, 190, 198), 1.05),
+                 left=shade(red, 0.85),
+                 right=shade(red, 0.7))
+    def P(x, y, z):
+        return iso_pt(x, y, z, ox, oy, s)
+    # door panel on +x
+    face = [P(1.12, -0.9, 4.0), P(1.12, 0.9, 4.0), P(1.12, 0.9, 0.3), P(1.12, -0.9, 0.3)]
+    d.polygon(face, fill=shade(red, 0.95))
+    d.line(face + [face[0]], fill=OUTLINE, width=2)
+    # chrome handle
+    draw_iso_box(d, 1.15, 0.55, 2.0, 0.12, 0.2, 1.2, ox, oy, s,
+                 top=shade((220, 220, 230), 1.1), left=shade((160, 160, 170), 1), right=shade((130, 130, 140), 1))
+    # brand stripe
+    d.polygon([P(1.13, -0.7, 3.6), P(1.13, 0.7, 3.6), P(1.13, 0.7, 3.35), P(1.13, -0.7, 3.35)],
+              fill=(250, 250, 255, 255))
+    # little magnet sticky notes
+    for (gy, gz), col in [((-0.5, 2.8), (255, 230, 80)), ((0.2, 2.5), (120, 220, 255))]:
+        q = [P(1.14, gy, gz), P(1.14, gy + 0.4, gz), P(1.14, gy + 0.4, gz - 0.4), P(1.14, gy, gz - 0.4)]
+        d.polygon(q, fill=col + (255,))
+    # feet
+    for gy in (-0.85, 0.7):
+        draw_iso_box(d, -1.0, gy, 0, 0.35, 0.25, 0.15, ox, oy, s,
+                     top=shade((40, 40, 48), 1.2), left=shade((25, 25, 30), 1), right=shade((20, 20, 25), 1))
+        draw_iso_box(d, 0.7, gy, 0, 0.35, 0.25, 0.15, ox, oy, s,
+                     top=shade((40, 40, 48), 1.2), left=shade((25, 25, 30), 1), right=shade((20, 20, 25), 1))
+    save(im, "fridge")
+
+
+def gen_bookshelf():
+    im = new_canvas()
+    d = ImageDraw.Draw(im)
+    ox, oy, s = 512, 680, 26
+    wood = (140, 95, 58)
+    wood_l = shade(wood, 1.15)
+    wood_d = shade(wood, 0.7)
+    # outer case
+    draw_iso_box(d, -0.4, -2.2, 0, 1.3, 4.4, 4.5, ox, oy, s,
+                 top=wood_l, left=shade(wood, 0.85), right=wood_d)
+    def P(x, y, z):
+        return iso_pt(x, y, z, ox, oy, s)
+    # shelves + books on +x face cavity
+    shelf_zs = [0.9, 2.0, 3.1, 4.2]
+    for z in shelf_zs:
+        draw_iso_box(d, -0.25, -2.05, z, 1.05, 4.1, 0.12, ox, oy, s,
+                     top=wood_l, left=shade(wood, 0.8), right=wood_d)
+    book_colors = [
+        (200, 60, 70), (50, 90, 180), (40, 140, 90), (220, 160, 40),
+        (120, 70, 160), (30, 30, 40), (230, 100, 50), (70, 160, 200),
+        (180, 50, 120), (90, 120, 60), (240, 220, 100), (60, 60, 90),
+    ]
+    bi = 0
+    for zi, z0 in enumerate([0.15, 1.05, 2.15, 3.25]):
+        y = -1.9
+        while y < 1.9:
+            bw = 0.35 + (bi % 3) * 0.12
+            bh = 0.65 + (bi % 4) * 0.08
+            if y + bw > 2.0:
+                break
+            col = book_colors[bi % len(book_colors)]
+            draw_iso_box(d, 0.55, y, z0, 0.55, bw, bh, ox, oy, s,
+                         top=shade(col, 1.15), left=shade(col, 0.85), right=shade(col, 0.65))
+            y += bw + 0.08
+            bi += 1
+    # plant on top
+    draw_iso_box(d, 0.0, -0.3, 4.55, 0.55, 0.55, 0.35, ox, oy, s,
+                 top=shade((200, 110, 70), 1.1), left=shade((150, 80, 50), 1), right=shade((120, 65, 40), 1))
+    # foliage blob
+    for (gx, gy, gz) in [(0.2, -0.1, 5.2), (0.35, 0.1, 5.0), (0.1, 0.15, 5.35)]:
+        cx, cy = iso_pt(gx, gy, gz, ox, oy, s)
+        d.ellipse([cx - 14, cy - 12, cx + 16, cy + 10], fill=(50, 140, 70, 255), outline=OUTLINE)
+    save(im, "bookshelf")
+
+
+def gen_foosball():
+    im = new_canvas()
+    d = ImageDraw.Draw(im)
+    ox, oy, s = 512, 720, 24
+    # table spans longer in x (along desk-facing) — foosball is wide
+    green = (40, 140, 75)
+    frame = (35, 35, 42)
+    # legs
+    for gx, gy in [(-2.6, -1.3), (2.2, -1.3), (-2.6, 1.0), (2.2, 1.0)]:
+        draw_iso_box(d, gx, gy, 0, 0.35, 0.35, 1.5, ox, oy, s,
+                     top=shade(frame, 1.2), left=shade(frame, 0.9), right=shade(frame, 0.7))
+    # apron
+    draw_iso_box(d, -3.0, -1.6, 1.5, 6.0, 3.2, 0.45, ox, oy, s,
+                 top=shade((50, 50, 58), 1.1), left=shade(frame, 0.95), right=shade(frame, 0.75))
+    # playfield
+    draw_iso_box(d, -2.7, -1.35, 1.95, 5.4, 2.7, 0.12, ox, oy, s,
+                 top=shade(green, 1.15), left=shade(green, 0.8), right=shade(green, 0.65))
+    def P(x, y, z):
+        return iso_pt(x, y, z, ox, oy, s)
+    # center line + goals
+    d.line([P(0, -1.3, 2.08), P(0, 1.3, 2.08)], fill=(230, 230, 240, 255), width=2)
+    for gx in (-2.5, 2.3):
+        d.polygon([P(gx, -0.45, 2.08), P(gx + 0.2, -0.45, 2.08), P(gx + 0.2, 0.45, 2.08), P(gx, 0.45, 2.08)],
+                  fill=shade((20, 20, 28), 1.0))
+    # rods + players
+    for i, gy in enumerate([-0.9, -0.3, 0.3, 0.9]):
+        # rod
+        d.line([P(-2.9, gy, 2.35), P(2.9, gy, 2.35)], fill=(180, 180, 190, 255), width=3)
+        # handles
+        draw_iso_box(d, -3.15, gy - 0.1, 2.2, 0.35, 0.2, 0.2, ox, oy, s,
+                     top=shade((220, 60, 60), 1.2), left=shade((160, 40, 40), 1), right=shade((120, 30, 30), 1))
+        draw_iso_box(d, 2.8, gy - 0.1, 2.2, 0.35, 0.2, 0.2, ox, oy, s,
+                     top=shade((60, 100, 220), 1.2), left=shade((40, 70, 160), 1), right=shade((30, 50, 120), 1))
+        # foos men
+        cols = [(220, 60, 60), (60, 100, 220)]
+        for j, gx in enumerate([-1.5, -0.4, 0.7, 1.8][: 2 + (i % 2)]):
+            col = cols[i % 2]
+            draw_iso_box(d, gx, gy - 0.12, 2.1, 0.25, 0.25, 0.55, ox, oy, s,
+                         top=shade(col, 1.2), left=shade(col, 0.85), right=shade(col, 0.65))
+    # ball
+    bx, by = P(0.3, 0.1, 2.2)
+    d.ellipse([bx - 6, by - 5, bx + 6, by + 5], fill=(250, 250, 255, 255), outline=OUTLINE)
+    save(im, "foosball")
+
+
+def gen_bike():
+    im = new_canvas()
+    d = ImageDraw.Draw(im)
+    ox, oy, s = 520, 740, 28
+    frame_c = (40, 170, 200)  # teal startup bike
+    tire = (30, 30, 36)
+    def P(x, y, z):
+        return iso_pt(x, y, z, ox, oy, s)
+
+    def wheel(gx, gy, gz, r=0.95):
+        # iso ellipse
+        pts = [iso_pt(gx + math.cos(a) * r, gy + math.sin(a) * r * 0.35, gz + math.sin(a) * r, ox, oy, s)
+               for a in [i / 24 * math.tau for i in range(24)]]
+        d.polygon(pts, fill=shade(tire, 1.1))
+        d.line(pts + [pts[0]], fill=OUTLINE, width=2)
+        # hub
+        cx, cy = iso_pt(gx, gy, gz, ox, oy, s)
+        d.ellipse([cx - 5, cy - 4, cx + 5, cy + 4], fill=(180, 180, 190, 255))
+        # spokes
+        for a in range(0, 360, 45):
+            rad = math.radians(a)
+            x2, y2 = iso_pt(gx + math.cos(rad) * r * 0.85, gy + math.sin(rad) * r * 0.3, gz + math.sin(rad) * r * 0.85, ox, oy, s)
+            d.line([(cx, cy), (x2, y2)], fill=(140, 140, 150, 255), width=1)
+
+    wheel(-2.0, 0, 0.95)
+    wheel(2.0, 0, 0.95)
+    # frame tubes
+    tubes = [
+        [(-2.0, 0, 0.95), (0.0, 0, 2.2)],  # down to seat tube junction
+        [(0.0, 0, 2.2), (1.5, 0, 2.5)],  # top tube
+        [(0.0, 0, 2.2), (0.0, 0, 0.5)],  # seat tube
+        [(0.0, 0, 0.5), (2.0, 0, 0.95)],  # chain stay
+        [(1.5, 0, 2.5), (2.0, 0, 0.95)],  # head/fork
+        [(0.0, 0, 2.2), (-0.1, 0, 3.0)],  # seat post
+    ]
+    for a, b in tubes:
+        d.line([P(*a), P(*b)], fill=frame_c + (255,), width=5)
+        d.line([P(*a), P(*b)], fill=OUTLINE, width=1)
+    # handlebar
+    d.line([P(1.5, -0.7, 2.7), P(1.5, 0.7, 2.7)], fill=shade((40, 40, 48), 1.2), width=4)
+    d.line([P(1.5, 0, 2.5), P(1.5, 0, 2.7)], fill=frame_c + (255,), width=4)
+    # seat
+    draw_iso_box(d, -0.45, -0.25, 3.0, 0.7, 0.5, 0.15, ox, oy, s,
+                 top=shade((30, 30, 36), 1.3), left=shade((20, 20, 24), 1), right=shade((15, 15, 18), 1))
+    # kickstand
+    d.line([P(0.2, 0, 0.5), P(0.6, 0.5, 0.05)], fill=shade((80, 80, 90), 1.1), width=3)
+    save(im, "bike")
+
+
+def gen_trash():
+    im = new_canvas()
+    d = ImageDraw.Draw(im)
+    ox, oy, s = 512, 760, 34
+    # dual bin: trash + recycling side by side
+    # recycling (blue)
+    draw_iso_box(d, -1.8, -0.9, 0, 1.5, 1.6, 2.0, ox, oy, s,
+                 top=shade((90, 150, 210), 1.2), left=shade((50, 110, 180), 0.95), right=shade((40, 90, 150), 0.9))
+    # trash (grey)
+    draw_iso_box(d, 0.1, -0.9, 0, 1.5, 1.6, 2.0, ox, oy, s,
+                 top=shade((120, 120, 128), 1.15), left=shade((80, 80, 88), 0.95), right=shade((60, 60, 68), 0.9))
+    def P(x, y, z):
+        return iso_pt(x, y, z, ox, oy, s)
+    # recycle symbol hint
+    cx, cy = P(-1.0, 0, 1.2)
+    d.ellipse([cx - 10, cy - 8, cx + 12, cy + 10], outline=(220, 240, 255, 255), width=2)
+    # liner peek
+    d.polygon([P(-1.7, -0.8, 2.0), P(-0.4, -0.8, 2.0), P(-0.4, 0.5, 2.0), P(-1.7, 0.5, 2.0)],
+              fill=(230, 230, 235, 255))
+    d.polygon([P(0.2, -0.8, 2.0), P(1.5, -0.8, 2.0), P(1.5, 0.5, 2.0), P(0.2, 0.5, 2.0)],
+              fill=(40, 40, 45, 255))
+    # crumpled paper in trash
+    for (gx, gy) in [(0.5, -0.3), (0.9, 0.1)]:
+        x, y = P(gx, gy, 2.05)
+        d.ellipse([x - 6, y - 4, x + 7, y + 5], fill=(240, 240, 245, 255), outline=OUTLINE)
+    save(im, "trash")
+
+
+def gen_plant2():
+    """Tall leafy plant variety — monstera-ish in a ceramic pot."""
+    im = new_canvas()
+    d = ImageDraw.Draw(im)
+    ox, oy, s = 512, 760, 30
+    # pot
+    pot = (230, 220, 210)
+    draw_iso_box(d, -1.0, -1.0, 0, 2.0, 2.0, 1.6, ox, oy, s,
+                 top=shade((60, 45, 35), 1.1), left=shade(pot, 0.85), right=shade(pot, 0.7))
+    # rim
+    draw_iso_box(d, -1.15, -1.15, 1.6, 2.3, 2.3, 0.25, ox, oy, s,
+                 top=shade(pot, 1.15), left=shade(pot, 0.9), right=shade(pot, 0.75))
+    def leaf(gx, gy, gz, ang, size, col):
+        pts = []
+        for i in range(10):
+            t = i / 10 * math.tau
+            # leaf oval skewed by ang
+            lx = math.cos(t) * size
+            ly = math.sin(t) * size * 0.45
+            ca, sa = math.cos(ang), math.sin(ang)
+            rx, ry = gx + lx * ca - ly * sa, gy + lx * sa + ly * ca
+            pts.append(iso_pt(rx, ry, gz + abs(math.sin(t)) * size * 0.35, ox, oy, s))
+        d.polygon(pts, fill=col + (255,))
+        d.line(pts + [pts[0]], fill=OUTLINE, width=1)
+
+    greens = [(40, 120, 55), (55, 150, 70), (30, 100, 45), (70, 170, 80)]
+    params = [
+        (0.0, 0.0, 3.2, 0.2, 1.4),
+        (-0.6, 0.3, 2.8, -0.6, 1.2),
+        (0.7, -0.2, 2.9, 0.8, 1.25),
+        (0.2, 0.6, 3.5, 1.2, 1.1),
+        (-0.3, -0.5, 3.6, -1.0, 1.15),
+        (0.5, 0.2, 4.0, 0.3, 1.0),
+        (-0.5, 0.0, 4.1, -0.4, 0.95),
+    ]
+    for i, (gx, gy, gz, ang, sz) in enumerate(params):
+        leaf(gx, gy, gz, ang, sz, greens[i % len(greens)])
+    # stem hints
+    for gx, gy in [(0, 0), (-0.2, 0.2), (0.25, -0.15)]:
+        d.line([iso_pt(gx, gy, 1.85, ox, oy, s), iso_pt(gx * 0.5, gy * 0.5, 3.5, ox, oy, s)],
+               fill=(40, 90, 50, 255), width=3)
+    save(im, "plant2")
+
+
+def main():
+    gens = [
+        gen_whiteboard,
+        gen_beanbag,
+        gen_watercooler,
+        gen_fridge,
+        gen_bookshelf,
+        gen_foosball,
+        gen_bike,
+        gen_trash,
+        gen_plant2,
+    ]
+    for g in gens:
+        g()
+    print("all props generated")
+
+
+if __name__ == "__main__":
+    main()

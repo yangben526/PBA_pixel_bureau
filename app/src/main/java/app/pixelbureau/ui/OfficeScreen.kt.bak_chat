@@ -1,0 +1,259 @@
+package app.pixelbureau.ui
+
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.relocation.BringIntoViewRequester
+import androidx.compose.foundation.relocation.bringIntoViewRequester
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import app.pixelbureau.PixelBureauApp
+import app.pixelbureau.logic.officeClock
+import kotlinx.coroutines.delay
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun OfficeScreen(model: BureauViewModel, modifier: Modifier = Modifier) {
+    val ui by model.ui.collectAsStateWithLifecycle()
+    val active = ui.agents.filter { !it.archived }
+    val selected = active.firstOrNull { it.id == ui.selectedId }
+    Column(modifier.fillMaxSize()) {
+        OfficeHeader(ui.bureau?.day ?: 1, ui.bureau?.reputation ?: 0, ui.banner)
+        OfficeViewport(model, Modifier.weight(1.05f).fillMaxWidth())
+        val stream = selected?.let { ui.streams[it.id] }
+        var confirmClear by remember(selected?.id) { mutableStateOf(false) }
+        var chatMenuOpen by remember(selected?.id) { mutableStateOf(false) }
+        val canClear = selected != null && (ui.messages.isNotEmpty() || stream != null)
+        Row(
+            Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(
+                Modifier.weight(1f).horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                for (agent in active) {
+                    val on = agent.id == ui.selectedId
+                    val bringIntoView = remember(agent.id) { BringIntoViewRequester() }
+                    LaunchedEffect(ui.selectedId) {
+                        if (ui.selectedId == agent.id) {
+                            bringIntoView.bringIntoView()
+                        }
+                    }
+                    TextButton(
+                        onClick = { model.select(agent.id) },
+                        modifier = Modifier
+                            .bringIntoViewRequester(bringIntoView)
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(if (on) Amber else PanelRaised),
+                    ) {
+                        Text(agent.name, color = if (on) Ink else Cream)
+                    }
+                }
+            }
+            if (selected != null) {
+                Box {
+                    IconButton(onClick = { chatMenuOpen = true }) {
+                        Icon(
+                            Icons.Filled.MoreVert,
+                            contentDescription = "Chat options",
+                            tint = CreamDim,
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = chatMenuOpen,
+                        onDismissRequest = { chatMenuOpen = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Clear messages", color = if (canClear) Brick else CreamDim) },
+                            onClick = {
+                                chatMenuOpen = false
+                                confirmClear = true
+                            },
+                            enabled = canClear,
+                        )
+                    }
+                }
+            }
+        }
+        val listState = rememberLazyListState()
+        LaunchedEffect(ui.messages.size, stream?.text) {
+            val last = ui.messages.lastIndex
+            if (last >= 0) {
+                listState.animateScrollToItem(last)
+            }
+        }
+        LazyColumn(
+            state = listState,
+            modifier = Modifier.weight(1f).fillMaxWidth().padding(horizontal = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (selected == null) {
+                item {
+                    Text(
+                        "Hire someone in Company and they will show up on the floor.",
+                        color = CreamDim,
+                        modifier = Modifier.padding(8.dp),
+                    )
+                }
+            } else if (ui.messages.isEmpty()) {
+                item {
+                    Text(
+                        "Give ${selected.name} something to do.",
+                        color = CreamDim,
+                        modifier = Modifier.padding(8.dp),
+                    )
+                }
+            }
+            items(ui.messages, key = { it.id }) { message ->
+                val live = if (stream != null && stream.messageId == message.id) stream.text else message.text
+                if (live.isBlank()) {
+                    return@items
+                }
+                Bubble(message.role, live)
+            }
+        }
+        if (ui.settings.apiKey.isBlank()) {
+            Text(
+                "Add a model in Settings before anyone can answer.",
+                color = CreamDim,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+            )
+        }
+        Row(
+            Modifier.fillMaxWidth().padding(start = 12.dp, end = 4.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            OutlinedTextField(
+                value = ui.draft,
+                onValueChange = model::setDraft,
+                modifier = Modifier.weight(1f),
+                placeholder = {
+                    Text(if (selected == null) "No one is on the floor" else "Message ${selected.name}")
+                },
+                maxLines = 4,
+            )
+            Spacer(Modifier.width(4.dp))
+            IconButton(onClick = model::send, enabled = selected != null) {
+                Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send", tint = Amber)
+            }
+        }
+        if (confirmClear && selected != null) {
+            AlertDialog(
+                onDismissRequest = { confirmClear = false },
+                containerColor = Panel,
+                title = { Text("Clear ${selected.name}'s chat?", color = Cream) },
+                text = {
+                    Text(
+                        "This deletes the thread and stops the current reply. The next message starts fresh.",
+                        color = CreamDim,
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = {
+                        confirmClear = false
+                        model.clearSession()
+                    }) { Text("Clear", color = Brick) }
+                },
+                dismissButton = {
+                    TextButton(onClick = { confirmClear = false }) { Text("Cancel") }
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun OfficeHeader(day: Int, reputation: Int, banner: String?) {
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            now = System.currentTimeMillis()
+            delay(1000)
+        }
+    }
+    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Text(
+                "Day $day  ·  ${officeClock(now)}",
+                color = Cream,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text("★ $reputation", color = Amber, fontWeight = FontWeight.SemiBold)
+        }
+        if (banner != null) {
+            Spacer(Modifier.height(4.dp))
+            Text(banner, color = Brick, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+}
+
+@Composable
+private fun OfficeViewport(model: BureauViewModel, modifier: Modifier) {
+    val office by model.office.collectAsStateWithLifecycle()
+    val ui by model.ui.collectAsStateWithLifecycle()
+    val sprites = (androidx.compose.ui.platform.LocalContext.current.applicationContext as PixelBureauApp).container.sprites
+    OfficeCanvas(
+        snapshot = office,
+        sprites = sprites,
+        ready = ui.spritesReady,
+        onTapAgent = model::select,
+        modifier = modifier,
+    )
+}
+
+@Composable
+private fun Bubble(role: String, text: String) {
+    val mine = role == "user"
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (mine) Arrangement.End else Arrangement.Start) {
+        Text(
+            text,
+            color = if (mine) Ink else Cream,
+            modifier = Modifier
+                .fillMaxWidth(0.86f)
+                .clip(RoundedCornerShape(16.dp))
+                .background(if (mine) Amber else PanelRaised)
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+        )
+    }
+}

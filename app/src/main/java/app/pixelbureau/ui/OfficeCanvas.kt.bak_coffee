@@ -1,0 +1,606 @@
+package app.pixelbureau.ui
+
+import android.graphics.Bitmap
+import android.graphics.Paint
+import android.graphics.Typeface
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.clipPath
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
+import app.pixelbureau.logic.ActorSnap
+import app.pixelbureau.logic.OfficeMap
+import app.pixelbureau.logic.OfficeSnapshot
+import app.pixelbureau.logic.Prop
+import app.pixelbureau.logic.desksWithActiveScreens
+import app.pixelbureau.logic.screenCodeGlyphs
+import app.pixelbureau.logic.screenCursorCol
+import app.pixelbureau.logic.screenCursorRow
+import app.pixelbureau.logic.screenCursorVisible
+import app.pixelbureau.logic.serverLedStrength
+import app.pixelbureau.logic.serverLeds
+import app.pixelbureau.logic.spriteFrame
+import app.pixelbureau.sprites.SpriteStore
+import kotlin.math.abs
+import kotlin.math.max
+import kotlin.math.min
+
+private class Camera {
+    var scale: Float = 1f
+    var originX: Float = 0f
+    var originY: Float = 0f
+    var tileW: Float = 120f
+    var tileH: Float = 60f
+
+    fun fit(viewW: Float, viewH: Float, tileW: Float, tileH: Float) {
+        this.tileW = tileW
+        this.tileH = tileH
+        var minX = Float.POSITIVE_INFINITY
+        var minY = Float.POSITIVE_INFINITY
+        var maxX = Float.NEGATIVE_INFINITY
+        var maxY = Float.NEGATIVE_INFINITY
+        for (y in 0 until OfficeMap.height) {
+            for (x in 0 until OfficeMap.width) {
+                val wx = (x - y) * tileW / 2f
+                val wy = (x + y) * tileH / 2f
+                minX = min(minX, wx)
+                maxX = max(maxX, wx)
+                minY = min(minY, wy)
+                maxY = max(maxY, wy)
+            }
+        }
+        minX -= tileW * 0.7f
+        maxX += tileW * 0.7f
+        minY -= tileH * 2.4f
+        maxY += tileH * 0.9f
+        val worldW = (maxX - minX).coerceAtLeast(1f)
+        val worldH = (maxY - minY).coerceAtLeast(1f)
+        scale = min(viewW / worldW, viewH / worldH)
+        originX = (viewW - worldW * scale) / 2f - minX * scale
+        originY = (viewH - worldH * scale) / 2f - minY * scale
+    }
+
+    /** Pinch zoom around the view center, then pan. Call after [fit]. */
+    fun applyView(userZoom: Float, pan: Offset, viewW: Float, viewH: Float) {
+        val zoom = userZoom.coerceIn(MinZoom, MaxZoom)
+        val cx = viewW / 2f
+        val cy = viewH / 2f
+        originX = (originX - cx) * zoom + cx + pan.x
+        originY = (originY - cy) * zoom + cy + pan.y
+        scale *= zoom
+    }
+
+    fun toScreen(x: Float, y: Float): Offset {
+        val wx = (x - y) * tileW / 2f
+        val wy = (x + y) * tileH / 2f
+        return Offset(originX + wx * scale, originY + wy * scale)
+    }
+}
+
+private const val MinZoom = 1f
+private const val MaxZoom = 2.75f
+
+/** Laptop glass overlay — terminal phosphor on a dark shell, no per-frame bitmaps. */
+private val ScreenBase = Color(0xE6081210)
+private val ScreenCodeBright = Color(0xFFB6FFCE)
+private val ScreenCodeDim = Color(0xFF4A9A68)
+private val ScreenPrompt = Color(0xFF7CFFA8)
+private val ScreenCursor = Color(0xFFD4FFE4)
+
+/** Server rack LED phosphor — green / amber matching the packed sprite art. */
+private val ServerLedGreen = Color(0xFF7CFF4A)
+private val ServerLedAmber = Color(0xFFFFC43A)
+
+@Composable
+fun OfficeCanvas(
+    snapshot: OfficeSnapshot,
+    sprites: SpriteStore,
+    ready: Boolean,
+    onTapAgent: (String) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val camera = remember { Camera() }
+    var userZoom by remember { mutableFloatStateOf(1f) }
+    var pan by remember { mutableStateOf(Offset.Zero) }
+    val labelPaint = remember {
+        Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.parseColor("#F3E6C8")
+            textAlign = Paint.Align.CENTER
+            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+        }
+    }
+    val bubblePaint = remember {
+        Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = android.graphics.Color.parseColor("#161410")
+            textAlign = Paint.Align.CENTER
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+        }
+    }
+    Canvas(
+        modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                detectTransformGestures { _, panChange, zoomChange, _ ->
+                    val nextZoom = (userZoom * zoomChange).coerceIn(MinZoom, MaxZoom)
+                    var nextPan = pan + panChange
+                    if (nextZoom <= 1.02f) {
+                        nextPan = Offset.Zero
+                    } else {
+                        val maxPan = min(size.width, size.height).toFloat() * (nextZoom - 1f) * 0.65f
+                        nextPan = Offset(
+                            nextPan.x.coerceIn(-maxPan, maxPan),
+                            nextPan.y.coerceIn(-maxPan, maxPan),
+                        )
+                    }
+                    userZoom = nextZoom
+                    pan = nextPan
+                }
+            }
+            .pointerInput(snapshot.actors, ready, userZoom, pan) {
+                detectTapGestures(
+                    onDoubleTap = {
+                        // Reset map to the default fitted view.
+                        userZoom = 1f
+                        pan = Offset.Zero
+                    },
+                    onTap = { tap ->
+                        val hit = hitAgent(snapshot.actors, camera, tap)
+                        if (hit != null) {
+                            onTapAgent(hit)
+                        }
+                    },
+                )
+            },
+    ) {
+        drawRect(FloorVoid)
+        if (!ready) {
+            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = android.graphics.Color.parseColor("#F3E6C8")
+                textAlign = Paint.Align.CENTER
+                textSize = 42f
+            }
+            drawContext.canvas.nativeCanvas.drawText(
+                "Opening the office…",
+                size.width / 2f,
+                size.height / 2f,
+                paint,
+            )
+            return@Canvas
+        }
+        val floor = sprites.get("tiles/floor")
+        val tileW = floor?.width?.toFloat() ?: 96f
+        val tileH = floor?.height?.toFloat() ?: 48f
+        camera.fit(size.width, size.height, tileW, tileH)
+        camera.applyView(userZoom, pan, size.width, size.height)
+        val floorImage = floor?.asImageBitmap()
+        for (y in 0 until OfficeMap.height) {
+            for (x in 0 until OfficeMap.width) {
+                val center = camera.toScreen(x.toFloat(), y.toFloat())
+                val dw = camera.tileW * camera.scale
+                val dh = camera.tileH * camera.scale
+                if (floorImage != null) {
+                    drawSprite(floorImage, center, dw, dh)
+                } else {
+                    diamond(center, dw, dh, Color(0xFFC4A574))
+                }
+            }
+        }
+        val litScreens = desksWithActiveScreens(snapshot.actors)
+        val pieces = buildList {
+            OfficeMap.props.forEach { add(Piece.Furniture(it)) }
+            snapshot.actors.forEach { add(Piece.Person(it)) }
+        }.sortedBy { it.depth }
+        for (piece in pieces) {
+            when (piece) {
+                is Piece.Furniture -> drawFurniture(piece.prop, sprites, camera, litScreens)
+                is Piece.Person -> drawActor(piece.actor, sprites, camera, labelPaint, bubblePaint)
+            }
+        }
+    }
+}
+
+private sealed class Piece {
+    abstract val depth: Float
+
+    data class Furniture(val prop: Prop) : Piece() {
+        override val depth: Float = if (prop.kind == "sofa") {
+            // Under both seat tiles so sleepers (bias above their cell) draw ON the cushions.
+            OfficeMap.sofaSpan.minOf { (it.x + it.y).toFloat() } - 0.05f
+        } else if (prop.kind == "chair") {
+            // Above a tucked desk-sitter at the same tile so the rear backrest
+            // stays toward the camera (agent peeks toward the laptop past it).
+            (prop.x + prop.y).toFloat() - 0.01f
+        } else {
+            (prop.x + prop.y).toFloat()
+        }
+    }
+
+    data class Person(val actor: ActorSnap) : Piece() {
+        // Desk sit/type with seat tuck sort under the chair (-0.04 < chair's -0.01)
+        // so the rear 3/4 backrest reads toward the camera while the agent faces
+        // the laptop. Sleepers stay above the loveseat. Walk/idle stay above chairs.
+        override val depth: Float
+            get() {
+                val bias = when (actor.anim) {
+                    "sleep" -> 0.12f
+                    "sit", "type" -> if (actor.useSeatTuck) -0.04f else 0.02f
+                    else -> 0.01f
+                }
+                return actor.x + actor.y + bias
+            }
+    }
+}
+
+private fun DrawScope.drawActor(
+    actor: ActorSnap,
+    sprites: SpriteStore,
+    camera: Camera,
+    labelPaint: Paint,
+    bubblePaint: Paint,
+) {
+    val frame = spriteFrame(actor.spriteKey, actor.anim, actor.frame, actor.facing)
+    val bitmap = sprites.get(frame)
+        ?: sprites.get("chars/${actor.spriteKey}_idle")
+        ?: return
+    val sleeping = actor.anim == "sleep"
+    val tuck = if ((actor.anim == "sit" || actor.anim == "type") && actor.useSeatTuck) {
+        OfficeMap.agentSeatTuck
+    } else {
+        0f
+    }
+    val sleepNudge = if (sleeping) OfficeMap.sleepNudgeFor(actor.x, actor.y) else null
+    val center = if (sleepNudge != null) {
+        val base = camera.toScreen(actor.x, actor.y)
+        // Per-cushion screen-x so each sleeper sits on their half of the loveseat.
+        Offset(base.x + sleepNudge.dxTileW * camera.tileW * camera.scale, base.y)
+    } else {
+        val base = camera.toScreen(actor.x - tuck, actor.y)
+        val deskNestX = if ((actor.anim == "sit" || actor.anim == "type") && actor.useSeatTuck) {
+            OfficeMap.deskSeatNestTileW * camera.tileW * camera.scale
+        } else {
+            0f
+        }
+        Offset(base.x + deskNestX, base.y)
+    }
+    // Sleep sprites are wider/shorter; scale by width so the curled body fits a cushion.
+    val destH = if (sleeping) {
+        camera.tileW * camera.scale * 0.42f
+    } else {
+        camera.tileW * camera.scale * 0.56f
+    }
+    val destW = destH * bitmap.width / bitmap.height.toFloat()
+    // Nest onto the seat surface (negative lifts off the floor into the cushions).
+    // Desk sit/type tuck uses deskSeatNestTileH so the agent sits ON the chair
+    // (head/torso visible) while depth still sorts under the rear backrest.
+    val nest = when {
+        sleepNudge != null -> sleepNudge.nestTileH * camera.tileH * camera.scale
+        (actor.anim == "sit" || actor.anim == "type") && actor.useSeatTuck ->
+            OfficeMap.deskSeatNestTileH * camera.tileH * camera.scale
+        else -> 0f
+    }
+    val foot = center.y + camera.tileH * camera.scale * 0.18f + nest
+    val top = foot - destH
+    val spriteCenter = Offset(center.x, top + destH / 2f)
+    drawOval(
+        color = Color(0x55000000),
+        topLeft = Offset(center.x - destW * 0.28f, foot - destH * 0.06f),
+        size = androidx.compose.ui.geometry.Size(destW * 0.56f, destH * 0.12f),
+    )
+    // Side facing: mirror the default (front) sheet. Walk/idle "back" also use front sheets.
+    // Desk sit/type: default sheets face +x; mirror when seat→laptop is -x (seatMirrorX).
+    // Prefer desk geometry over the facing string so a stale facing cannot face away
+    // from the laptop. Sofa sleep stays unflipped.
+    val flipX = when {
+        sleeping -> false
+        (actor.anim == "sit" || actor.anim == "type") && actor.useSeatTuck -> {
+            val desk = actor.deskIndex
+            if (desk != null) OfficeMap.seatMirrorX(desk) else actor.facing == "left"
+        }
+        else -> actor.facing == "left"
+    }
+    if (flipX) {
+        scale(scaleX = -1f, scaleY = 1f, pivot = spriteCenter) {
+            drawSprite(bitmap.asImageBitmap(), spriteCenter, destW, destH)
+        }
+    } else {
+        drawSprite(bitmap.asImageBitmap(), spriteCenter, destW, destH)
+    }
+    val nameSize = (camera.tileH * camera.scale * 0.38f).coerceIn(18f, 36f)
+    labelPaint.textSize = nameSize
+    drawContext.canvas.nativeCanvas.drawText(actor.name, center.x, top - nameSize * 0.35f, labelPaint)
+    val bubble = actor.bubble ?: return
+    bubblePaint.textSize = nameSize
+    val width = bubblePaint.measureText(bubble) + nameSize
+    val bubbleTop = top - nameSize * 2.3f
+    drawRoundRect(
+        color = Amber,
+        topLeft = Offset(center.x - width / 2f, bubbleTop),
+        size = androidx.compose.ui.geometry.Size(width, nameSize * 1.35f),
+        cornerRadius = androidx.compose.ui.geometry.CornerRadius(nameSize * 0.35f),
+    )
+    drawContext.canvas.nativeCanvas.drawText(
+        bubble,
+        center.x,
+        bubbleTop + nameSize * 1.02f,
+        bubblePaint,
+    )
+}
+
+private fun DrawScope.drawSprite(
+    image: androidx.compose.ui.graphics.ImageBitmap,
+    center: Offset,
+    destW: Float,
+    destH: Float,
+) {
+    val left = (center.x - destW / 2f).toInt()
+    val top = (center.y - destH / 2f).toInt()
+    drawImage(
+        image = image,
+        dstOffset = IntOffset(left, top),
+        dstSize = IntSize(destW.toInt().coerceAtLeast(1), destH.toInt().coerceAtLeast(1)),
+        filterQuality = FilterQuality.None,
+    )
+}
+
+private fun DrawScope.diamond(center: Offset, width: Float, height: Float, color: Color) {
+    val path = Path().apply {
+        moveTo(center.x, center.y - height / 2f)
+        lineTo(center.x + width / 2f, center.y)
+        lineTo(center.x, center.y + height / 2f)
+        lineTo(center.x - width / 2f, center.y)
+        close()
+    }
+    drawPath(path, color)
+}
+
+private fun DrawScope.drawFurniture(
+    prop: Prop,
+    sprites: SpriteStore,
+    camera: Camera,
+    litScreens: Map<Int, Int>,
+) {
+    if (prop.kind == "coffee") {
+        // Lounge coffee: bare desk underlay (no laptop/mug), then the machine on top.
+        // Work desks keep props/desk unchanged.
+        val underlay = sprites.get("props/desk_bare") ?: sprites.get("props/desk")
+        val deskBox = if (underlay != null) {
+            // Lounge underlay keeps the pre-work-desk size; work desks use a larger scale.
+            val box = spriteBox(underlay, prop.x.toFloat(), prop.y.toFloat(), propScale("desk_bare"), camera)
+            drawSprite(underlay.asImageBitmap(), box.center, box.w, box.h)
+            box
+        } else {
+            null
+        }
+        val machine = sprites.get("props/coffee") ?: return
+        val machineBox = spriteBox(machine, prop.x.toFloat(), prop.y.toFloat(), propScale("coffee"), camera)
+        // Nudge so machine feet rest on the isometric tabletop (not the floor/feet anchor).
+        val origin = if (deskBox != null) {
+            Offset(
+                machineBox.center.x + deskBox.w * CoffeeOnDeskDx,
+                machineBox.center.y - deskBox.h * CoffeeOnDeskDy,
+            )
+        } else {
+            machineBox.center
+        }
+        drawSprite(machine.asImageBitmap(), origin, machineBox.w, machineBox.h)
+        return
+    }
+    val bitmap = sprites.get("props/${prop.kind}") ?: return
+    val (x, y) = when (prop.kind) {
+        "sofa" -> {
+            val span = OfficeMap.sofaSpan
+            span.map { it.x }.average().toFloat() to span.map { it.y }.average().toFloat()
+        }
+        "chair" -> (prop.x - OfficeMap.seatTuck) to prop.y.toFloat()
+        else -> prop.x.toFloat() to prop.y.toFloat()
+    }
+    val box = spriteBox(bitmap, x, y, propScale(prop.kind), camera)
+    drawSprite(bitmap.asImageBitmap(), box.center, box.w, box.h)
+    if (prop.kind == "desk") {
+        val deskIndex = OfficeMap.desks.indexOfFirst { it.x == prop.x && it.y == prop.y }
+        val frame = litScreens[deskIndex]
+        if (frame != null) {
+            drawLaptopScreen(box, frame)
+        }
+    } else if (prop.kind == "server") {
+        drawServerLeds(box, System.currentTimeMillis())
+    }
+}
+
+/**
+ * Canvas overlay on the isometric laptop glass. Fractions are relative to the
+ * cropped desk sprite (keyAndCrop). Quad tuned for the v28 desk-only reference
+ * laptop (true-alpha source → magenta key; colorful wallpaper idle; terminal overlay while typing).
+ */
+private fun DrawScope.drawLaptopScreen(box: SpriteBox, frame: Int) {
+    val left = box.center.x - box.w * 0.5f
+    val top = box.center.y - box.h * 0.5f
+    // Glass quad remapped for v28 desk-only packed reference (wallpaper+dock hull inset → crop fracs).
+    val tl = Offset(left + box.w * 0.3629f, top + box.h * 0.1710f)
+    val tr = Offset(left + box.w * 0.5553f, top + box.h * 0.1094f)
+    val br = Offset(left + box.w * 0.5735f, top + box.h * 0.2908f)
+    val bl = Offset(left + box.w * 0.3784f, top + box.h * 0.3761f)
+    val glass = Path().apply {
+        moveTo(tl.x, tl.y)
+        lineTo(tr.x, tr.y)
+        lineTo(br.x, br.y)
+        lineTo(bl.x, bl.y)
+        close()
+    }
+    clipPath(glass) {
+        // Dark terminal base covers the wallpaper while an agent types.
+        drawPath(glass, ScreenBase)
+        val rows = 6
+        val glyphs = screenCodeGlyphs(frame, rows)
+        val stroke = (box.h * 0.011f).coerceIn(1.1f, 2.6f)
+        for (glyph in glyphs) {
+            val t = (glyph.row + 0.5f) / rows
+            val x0 = tl.x * (1f - t) + bl.x * t
+            val y0 = tl.y * (1f - t) + bl.y * t
+            val x1 = tr.x * (1f - t) + br.x * t
+            val y1 = tr.y * (1f - t) + br.y * t
+            val sx = x0 * (1f - glyph.start) + x1 * glyph.start
+            val sy = y0 * (1f - glyph.start) + y1 * glyph.start
+            val ex = x0 * (1f - glyph.end) + x1 * glyph.end
+            val ey = y0 * (1f - glyph.end) + y1 * glyph.end
+            val color = when {
+                glyph.prompt -> ScreenPrompt
+                glyph.bright -> ScreenCodeBright
+                else -> ScreenCodeDim
+            }
+            drawLine(
+                color = color,
+                start = Offset(sx, sy),
+                end = Offset(ex, ey),
+                strokeWidth = if (glyph.prompt) stroke * 1.15f else stroke,
+            )
+        }
+        // Blinking block cursor at the end of the active typed line.
+        if (screenCursorVisible(frame)) {
+            val row = screenCursorRow(frame, rows)
+            val col = screenCursorCol(frame, rows)
+            val t = (row + 0.5f) / rows
+            val x0 = tl.x * (1f - t) + bl.x * t
+            val y0 = tl.y * (1f - t) + bl.y * t
+            val x1 = tr.x * (1f - t) + br.x * t
+            val y1 = tr.y * (1f - t) + br.y * t
+            val cx = x0 * (1f - col) + x1 * col
+            val cy = y0 * (1f - col) + y1 * col
+            // Along-row unit for a short block; across-row for thickness.
+            val rowDx = (x1 - x0)
+            val rowDy = (y1 - y0)
+            val rowLen = kotlin.math.sqrt(rowDx * rowDx + rowDy * rowDy).coerceAtLeast(1f)
+            val block = (rowLen * 0.035f).coerceIn(2f, 5f)
+            val ux = rowDx / rowLen
+            val uy = rowDy / rowLen
+            // Across-row (TL→BL) for cursor height.
+            val across = (box.h * 0.018f).coerceIn(1.6f, 3.5f)
+            val acrossDx = (bl.x - tl.x)
+            val acrossDy = (bl.y - tl.y)
+            val acrossLen = kotlin.math.sqrt(acrossDx * acrossDx + acrossDy * acrossDy).coerceAtLeast(1f)
+            val ax = acrossDx / acrossLen * across * 0.5f
+            val ay = acrossDy / acrossLen * across * 0.5f
+            drawLine(
+                color = ScreenCursor,
+                start = Offset(cx - ax, cy - ay),
+                end = Offset(cx + ax + ux * block, cy + ay + uy * block),
+                strokeWidth = block,
+            )
+        }
+    }
+}
+
+/**
+ * Overlay blink dots on the single-rack. Quads are crop-relative (keyAndCrop),
+ * same pattern as [drawLaptopScreen]. Long bar / square glow overlays removed.
+ */
+private fun DrawScope.drawServerLeds(box: SpriteBox, nowMs: Long) {
+    val left = box.center.x - box.w * 0.5f
+    val top = box.center.y - box.h * 0.5f
+    for (led in serverLeds()) {
+        val strength = serverLedStrength(led, nowMs)
+        if (strength < 0.05f) continue
+        val l = left + box.w * led.left
+        val t = top + box.h * led.top
+        val r = left + box.w * led.right
+        val b = top + box.h * led.bottom
+        val w = (r - l).coerceAtLeast(1f)
+        val h = (b - t).coerceAtLeast(1f)
+        val core = if (led.green) ServerLedGreen else ServerLedAmber
+        // Indicator dot: tiny bright square when lit.
+        val alpha = (0.15f + 0.85f * strength).coerceIn(0f, 1f)
+        drawRect(
+            color = core.copy(alpha = alpha),
+            topLeft = Offset(l, t),
+            size = androidx.compose.ui.geometry.Size(w.coerceAtLeast(1.2f), h.coerceAtLeast(1.2f)),
+        )
+    }
+}
+
+private data class SpriteBox(val center: Offset, val w: Float, val h: Float)
+
+private fun spriteBox(bitmap: Bitmap, x: Float, y: Float, scale: Float, camera: Camera): SpriteBox {
+    val anchor = camera.toScreen(x, y)
+    val width = camera.tileW * camera.scale * scale
+    val height = width * bitmap.height / bitmap.width.toFloat()
+    val feet = anchor.y + camera.tileH * camera.scale * 0.08f
+    return SpriteBox(Offset(anchor.x, feet - height / 2f), width, height)
+}
+
+/** Screen nudge as a fraction of the bare-desk sprite box so the lounge machine sits on the tabletop. */
+private const val CoffeeOnDeskDx = 0.0f
+private const val CoffeeOnDeskDy = 0.48f
+
+private fun propScale(kind: String): Float = when (kind) {
+    // Work desks: packed ~963×786 v28 desk-only reference — push draw scale so agents look small beside it.
+    // Coffee underlay stays desk_bare@0.70. Chair scaled to match reference proportions.
+    "desk" -> 1.18f
+    "desk_bare" -> 0.70f
+    "chair" -> 0.68f
+    "sofa" -> 1.22f
+    "server" -> 0.93f
+    "plant" -> 0.42f
+    "coffee" -> 0.36f
+    else -> 0.5f
+}
+
+private fun hitAgent(actors: List<ActorSnap>, camera: Camera, tap: Offset): String? {
+    var best: String? = null
+    var bestDistance = Float.POSITIVE_INFINITY
+    for (actor in actors) {
+        val sleeping = actor.anim == "sleep"
+        val tuck = if ((actor.anim == "sit" || actor.anim == "type") && actor.useSeatTuck) {
+            OfficeMap.agentSeatTuck
+        } else {
+            0f
+        }
+        val sleepNudge = if (sleeping) OfficeMap.sleepNudgeFor(actor.x, actor.y) else null
+        val center = if (sleepNudge != null) {
+            val base = camera.toScreen(actor.x, actor.y)
+            Offset(
+                base.x + sleepNudge.dxTileW * camera.tileW * camera.scale,
+                base.y + sleepNudge.nestTileH * camera.tileH * camera.scale,
+            )
+        } else {
+            val base = camera.toScreen(actor.x - tuck, actor.y)
+            val deskNest = if ((actor.anim == "sit" || actor.anim == "type") && actor.useSeatTuck) {
+                OfficeMap.deskSeatNestTileH * camera.tileH * camera.scale
+            } else {
+                0f
+            }
+            val deskNestX = if ((actor.anim == "sit" || actor.anim == "type") && actor.useSeatTuck) {
+                OfficeMap.deskSeatNestTileW * camera.tileW * camera.scale
+            } else {
+                0f
+            }
+            Offset(base.x + deskNestX, base.y + deskNest)
+        }
+        val reach = camera.tileW * camera.scale * 0.7f
+        val dx = tap.x - center.x
+        val dy = tap.y - (center.y - reach * 0.4f)
+        val distance = abs(dx) + abs(dy)
+        if (distance < reach && distance < bestDistance) {
+            best = actor.id
+            bestDistance = distance
+        }
+    }
+    return best
+}

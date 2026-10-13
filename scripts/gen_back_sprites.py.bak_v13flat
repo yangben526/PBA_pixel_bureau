@@ -1,0 +1,960 @@
+#!/usr/bin/env python3
+"""Generate approximate back-facing frames from front character sprites.
+
+Paints a solid back-of-head hair mass (no front face). For seated sit/type
+frames, fully redraws head + upper torso as a true back view (solid garment
+panel, no V-neck / collar / drawstrings / front hands) and redraws the lower
+body as seated-from-behind (solid pants fill, heel/shoe silhouettes toward the
+viewer). Walk/idle only soften front shirt accents. Source art is front-only;
+this is a deliberate stand-in until true directional sheets exist.
+"""
+from __future__ import annotations
+
+from collections import Counter
+from pathlib import Path
+
+from PIL import Image
+
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "media" / "sprites" / "chars"
+PEOPLE = ["byte", "cursor", "kai", "ops", "pixel", "you"]
+FRAMES = ["idle", "sit", "type0", "type1", "walk0", "walk1", "walk2", "walk3"]
+
+
+# Explicit seated Y bands (fractions of character bbox height).
+# head_bot: hair mass ends here; torso_bot (== leg_top): pants begin.
+# Tuned once per character so chin-scanning cannot crush the garment band.
+SEATED_BANDS = {
+    # person: (head_bot_frac, torso_bot_frac)
+    "you": (0.40, 0.72),
+    "byte": (0.40, 0.72),
+    "kai": (0.40, 0.72),
+    "ops": (0.40, 0.72),
+    "pixel": (0.40, 0.72),
+    "cursor": (0.40, 0.72),
+}
+DEFAULT_SEATED_BANDS = (0.40, 0.72)
+
+
+def seated_bands(person: str, frame: str = ""):
+    head_f, torso_f = SEATED_BANDS.get(person, DEFAULT_SEATED_BANDS)
+    if frame.startswith("type"):
+        # Typing sits slightly more upright / desk-forward; keep legs a tad higher.
+        torso_f = min(0.78, torso_f + 0.04)
+    return head_f, torso_f
+
+
+
+def is_magenta(r: int, g: int, b: int) -> bool:
+    return r > 130 and b > 130 and g < r and g < b and (r + b - 2 * g) > 50
+
+
+def is_outline(r: int, g: int, b: int) -> bool:
+    return (r + g + b) < 55
+
+
+def is_skin(r: int, g: int, b: int) -> bool:
+    if is_magenta(r, g, b) or is_outline(r, g, b):
+        return False
+    if r < 95 or g < 55 or b < 40:
+        return False
+    return (r - b) > 22 and r >= g - 18 and g >= b - 8 and 210 < (r + g + b) < 680
+
+
+def near(c, o, tol=48):
+    return all(abs(c[i] - o[i]) < tol for i in range(3))
+
+
+def bbox(im: Image.Image):
+    w, h = im.size
+    px = im.load()
+    minx, miny, maxx, maxy = w, h, -1, -1
+    for y in range(h):
+        for x in range(w):
+            if not is_magenta(*px[x, y]):
+                minx = min(minx, x)
+                miny = min(miny, y)
+                maxx = max(maxx, x)
+                maxy = max(maxy, y)
+    return minx, miny, maxx, maxy
+
+
+def mode_color(samples):
+    cnt: Counter = Counter()
+    for r, g, b in samples:
+        if is_magenta(r, g, b) or is_outline(r, g, b):
+            continue
+        if r > 230 and g > 230 and b > 230:
+            continue
+        cnt[(r // 8 * 8, g // 8 * 8, b // 8 * 8)] += 1
+    return cnt.most_common(1)[0][0] if cnt else (90, 60, 40)
+
+
+def darken(c, f):
+    return tuple(max(0, min(255, int(v * f))) for v in c)
+
+
+def on_silhouette_edge(x: int, y: int, px, w: int, h: int) -> bool:
+    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1)):
+        nx, ny = x + dx, y + dy
+        if nx < 0 or ny < 0 or nx >= w or ny >= h:
+            return True
+        if is_magenta(*px[nx, ny]):
+            return True
+    return False
+
+
+def cdist(a, b):
+    return abs(a[0] - b[0]) + abs(a[1] - b[1]) + abs(a[2] - b[2])
+
+
+def quant(c):
+    return (c[0] // 8 * 8, c[1] // 8 * 8, c[2] // 8 * 8)
+
+
+def is_true_hat_red(r, g, b) -> bool:
+    """Ops-style baseball cap red — not blonde/orange hair."""
+    return r > 150 and g < 70 and b < 70 and (r - g) > 70 and (r - b) > 70
+
+
+def hair_shade(hair, fx: float, fy: float, x: int, y: int, crown_variants):
+    """Soft hair shading — no harsh vertical helmet-part line."""
+    hd = darken(hair, 0.62)
+    hm = darken(hair, 0.82)
+    hl = tuple(min(255, int(v * 1.10)) for v in hair)
+    if crown_variants and fy < 0.42 and (x * 7 + y * 3) % 6 == 0:
+        return crown_variants[(x + y) % len(crown_variants)]
+    # Soft bottom fringe across width (not a center bar).
+    if fy > 0.88:
+        return hd if ((x + y) % 2 == 0) else hm
+    if fy > 0.78:
+        return hm if ((x * 3 + y) % 4 == 0) else hair
+    if abs(fx) > 0.78:
+        return hm
+    if fy < 0.18 and abs(fx) < 0.40 and (x * 2 + y * 5) % 13 == 0:
+        return hl
+    if (x * 5 + y * 3) % 11 == 0:
+        return hm
+    return hair if ((x + y) % 5) else hm
+
+
+def hat_shade(hat, fx: float, fy: float, x: int, y: int):
+    hd = darken(hat, 0.72)
+    hm = darken(hat, 0.88)
+    hl = tuple(min(255, int(v * 1.08)) for v in hat)
+    if fy > 0.72:
+        return hd
+    if abs(fx) > 0.75:
+        return hm
+    if fy < 0.22 and abs(fx) < 0.35 and (x + y) % 9 == 0:
+        return hl
+    return hat if ((x + y) % 4) else hm
+
+
+def _side_modes(samples, top_n=4):
+    cnt: Counter = Counter()
+    for r, g, b in samples:
+        if is_magenta(r, g, b) or is_outline(r, g, b) or is_skin(r, g, b):
+            continue
+        cnt[(r // 8 * 8, g // 8 * 8, b // 8 * 8)] += 1
+    return cnt.most_common(top_n)
+
+
+def sample_hair_from_sheets(person: str):
+    """Hair (+ optional hat) from walk/idle/sit crown. Blonde not filtered as skin."""
+    samples = []
+    hat_samples = []
+    for name in (f"{person}_walk0.png", f"{person}_idle.png", f"{person}_sit.png"):
+        path = SRC / name
+        if not path.exists():
+            continue
+        im = Image.open(path).convert("RGB")
+        px = im.load()
+        minx, miny, maxx, maxy = bbox(im)
+        if maxx < minx:
+            continue
+        bh = maxy - miny + 1
+        bw = maxx - minx + 1
+        cx = (minx + maxx) / 2.0
+        for y in range(miny, miny + max(10, int(bh * 0.18))):
+            for x in range(minx, maxx + 1):
+                r, g, b = px[x, y]
+                if is_magenta(r, g, b) or is_outline(r, g, b):
+                    continue
+                fx = abs(x - cx) / (bw / 2.0)
+                if fx > 0.85:
+                    continue
+                fy = (y - miny) / float(bh)
+                # Skip pinkish face skin peeking under bangs; keep blonde hair.
+                if fy > 0.10 and fx < 0.35 and is_skin(r, g, b) and (r - g) < 40:
+                    continue
+                if is_true_hat_red(r, g, b):
+                    hat_samples.append((r, g, b))
+                else:
+                    samples.append((r, g, b))
+    hair = mode_color(samples) if samples else (90, 60, 40)
+    # Prefer a lighter blonde/highlight if it is common near the mode.
+    if samples:
+        cnt: Counter = Counter(quant(s) for s in samples)
+        top = cnt.most_common(6)
+        mode_n = top[0][1]
+        for col, n in top:
+            if n >= mode_n * 0.35 and sum(col) > sum(hair) + 40 and near(col, hair, 90):
+                hair = col
+                break
+    uniq = []
+    for c in samples:
+        qc = quant(c)
+        if near(qc, hair, 80) and qc not in uniq:
+            uniq.append(qc)
+        if len(uniq) >= 8:
+            break
+    crown = uniq or [hair, darken(hair, 0.82)]
+    hat = None
+    if len(hat_samples) > 200:
+        hat = mode_color(hat_samples)
+    return hair, crown, hat
+
+
+def sample_garment_back(px, minx, miny, maxx, maxy, bh, bw, cx,
+                         y0f=0.50, y1f=0.64):
+    """Pick back-of-garment color from mid-torso side panels only.
+
+    Walk sheets are preferred callers: mid-torso sides hold the coat/hoodie
+    without pants, chair wood, or lap hands. Requires left+right agreement so
+    center plackets / teal undershirts do not beat a white lab coat.
+    """
+    left, right, whites = [], [], []
+    y0 = miny + int(bh * y0f)
+    y1 = miny + int(bh * y1f)
+    for y in range(y0, y1):
+        for x in range(minx, maxx + 1):
+            r, g, b = px[x, y]
+            if is_magenta(r, g, b) or is_outline(r, g, b) or is_skin(r, g, b):
+                continue
+            fx = (x - cx) / (bw / 2.0)
+            if -0.78 <= fx <= -0.28:
+                left.append((r, g, b))
+                if r > 210 and g > 210 and b > 210:
+                    whites.append((r, g, b))
+            elif 0.28 <= fx <= 0.78:
+                right.append((r, g, b))
+                if r > 210 and g > 210 and b > 210:
+                    whites.append((r, g, b))
+    side_n = len(left) + len(right)
+    if side_n and len(whites) / side_n > 0.18:
+        return mode_color(whites) if whites else (240, 240, 240)
+
+    lt = _side_modes(left)
+    rt = _side_modes(right)
+    if not lt and not rt:
+        return (90, 60, 80)
+    if not lt:
+        return rt[0][0]
+    if not rt:
+        return lt[0][0]
+
+    def side_frac(top, col):
+        total = sum(n for _, n in top) or 1
+        best = 0.0
+        for c, n in top:
+            if near(c, col, 40):
+                best = max(best, n / total)
+        return best
+
+    candidates = [c for c, _ in lt[:3]] + [c for c, _ in rt[:3]]
+    best, best_s = candidates[0], -1.0
+    for col in candidates:
+        s = side_frac(lt, col) + side_frac(rt, col)
+        # Prefer mid-luminance garment over near-black outline bleed / pants.
+        lum = sum(col)
+        if lum < 90:
+            s *= 0.35
+        if s > best_s:
+            best, best_s = col, s
+    return best
+
+
+def sample_garment_for_person(person: str, sit: Image.Image):
+    """Sample garment from walk torso sides only (never pants / sit lap).
+
+    Sit sheets fold the legs up so thigh/pants pixels invade the old 0.56–0.74
+    torso window; walk mid-torso (0.50–0.64) is the reliable coat/shirt band.
+    """
+    for name in (f"{person}_walk0.png", f"{person}_walk1.png", f"{person}_idle.png"):
+        path = SRC / name
+        if not path.exists():
+            continue
+        im = Image.open(path).convert("RGB")
+        px = im.load()
+        minx, miny, maxx, maxy = bbox(im)
+        if maxx < minx:
+            continue
+        bh = maxy - miny + 1
+        bw = maxx - minx + 1
+        cx = (minx + maxx) / 2.0
+        for y0f, y1f in ((0.50, 0.64), (0.48, 0.60), (0.54, 0.66)):
+            col = sample_garment_back(px, minx, miny, maxx, maxy, bh, bw, cx, y0f, y1f)
+            if col != (90, 60, 80):
+                return col
+    # Last resort: sit mid-torso (higher / tighter than old 0.56–0.74).
+    px = sit.load()
+    minx, miny, maxx, maxy = bbox(sit)
+    bh = maxy - miny + 1
+    bw = maxx - minx + 1
+    cx = (minx + maxx) / 2.0
+    return sample_garment_back(px, minx, miny, maxx, maxy, bh, bw, cx, 0.48, 0.60)
+
+
+def shirt_shade(shirt, afx: float, x: int, y: int):
+    """Subtle back-panel shade — no strong center V-neck darkening."""
+    lum = sum(shirt)
+    if lum > 600:
+        d = darken(shirt, 0.95)
+        m = darken(shirt, 0.98)
+        if afx < 0.12 and (x + y) % 6 == 0:
+            return d
+        if afx > 0.70 and (x * 3 + y) % 8 == 0:
+            return m
+        return shirt
+    shirt_d = darken(shirt, 0.86)
+    shirt_m = darken(shirt, 0.93)
+    shirt_l = tuple(min(255, int(v * 1.05)) for v in shirt)
+    if afx < 0.08 and (x + y) % 5 == 0:
+        return shirt_d
+    if afx > 0.72:
+        return shirt_l if ((x * 3 + y) % 7 == 0) else shirt_m
+    return shirt if ((x + y) % 6) else shirt_m
+
+
+def rebuild_outline_band(op, minx, miny, maxx, maxy, w, h, y0, y1):
+    for y in range(y0, y1 + 1):
+        for x in range(minx, maxx + 1):
+            r, g, b = op[x, y]
+            if is_magenta(r, g, b):
+                continue
+            if on_silhouette_edge(x, y, op, w, h):
+                op[x, y] = (14, 12, 10)
+
+
+def redraw_seated_head(out: Image.Image, src: Image.Image, person: str, frame: str = ""):
+    """Full back-of-head redraw: solid hair (+ hat), no face, no torso paint."""
+    op = out.load()
+    px = src.load()
+    w, h = out.size
+    minx, miny, maxx, maxy = bbox(src)
+    if maxx < minx:
+        return miny, (90, 60, 40)
+    bh = maxy - miny + 1
+    bw = maxx - minx + 1
+    cx = (minx + maxx) / 2.0
+
+    hair, crown, hat = sample_hair_from_sheets(person)
+
+    head_f, _torso_f = seated_bands(person, frame)
+    head_bot = miny + int(bh * head_f)
+
+    head_cx = cx
+    head_cy = miny + bh * 0.26
+    head_rx = bw * 0.52
+    head_ry = bh * 0.28
+    hat_bot = miny + int(bh * 0.34) if hat else -1
+
+    for y in range(miny, head_bot + 1):
+        for x in range(minx, maxx + 1):
+            r, g, b = px[x, y]
+            if is_magenta(r, g, b):
+                continue
+            if is_outline(r, g, b) and on_silhouette_edge(x, y, px, w, h):
+                continue
+
+            fx = (x - cx) / (bw / 2.0)
+            fy_head = (y - miny) / max(1.0, float(head_bot - miny))
+            nx = (x - head_cx) / head_rx
+            ny = (y - head_cy) / head_ry
+            dist = nx * nx + ny * ny
+            in_mass = dist <= 1.28 or (y <= head_bot and abs(fx) < 0.95)
+            if not in_mass:
+                continue
+
+            if hat and y < hat_bot and abs(fx) > 0.90 and fy_head < 0.55:
+                op[x, y] = (255, 0, 255)
+                continue
+
+            head_fy = max(0.0, min(1.0, (y - (head_cy - head_ry)) / max(1.0, 2 * head_ry)))
+
+            if hat and y <= hat_bot and fy_head < 0.72:
+                hair_c = hair_shade(hair, fx, head_fy, x, y, crown)
+                hat_c = hat_shade(hat, fx, fy_head, x, y)
+                if fy_head < 0.55 and abs(fx) < 0.72:
+                    op[x, y] = hat_c
+                    continue
+                if fy_head < 0.68 and abs(fx) < 0.55:
+                    t = (fy_head - 0.55) / 0.13
+                    t = max(0.0, min(1.0, t))
+                    op[x, y] = tuple(int(hat_c[i] * (1 - t) + hair_c[i] * t) for i in range(3))
+                    continue
+
+            op[x, y] = hair_shade(hair, fx, head_fy, x, y, crown)
+
+    # Scrub remaining face / glass / skin inside the head mass.
+    for y in range(miny, head_bot + 1):
+        for x in range(minx, maxx + 1):
+            r, g, b = op[x, y]
+            if is_magenta(r, g, b):
+                continue
+            if is_outline(r, g, b) and on_silhouette_edge(x, y, op, w, h):
+                continue
+            fx = (x - cx) / (bw / 2.0)
+            if abs(fx) > 0.96:
+                continue
+            skinish = is_skin(r, g, b)
+            bright = r > 195 and g > 175 and b > 140 and abs(fx) < 0.75
+            blush = r > 170 and g < 150 and b < 150 and (r - g) > 35
+            glass = abs(r - g) < 28 and abs(g - b) < 28 and 80 < r < 190 and abs(fx) < 0.72
+            if not (skinish or bright or blush or glass):
+                continue
+            head_fy = max(0.0, min(1.0, (y - (head_cy - head_ry)) / max(1.0, 2 * head_ry)))
+            fy_head = (y - miny) / max(1.0, float(head_bot - miny))
+            if hat and y <= hat_bot and fy_head < 0.62:
+                op[x, y] = hat_shade(hat, fx, fy_head, x, y)
+            else:
+                op[x, y] = hair_shade(hair, fx, head_fy, x, y, crown)
+
+    # Tiny nape tip only (1–2 px of darker hair) — never a tall helmet bar or
+    # hair-colored yoke spilling into the shirt band.
+    nape1 = head_bot + max(1, int(bh * 0.006))
+    for y in range(head_bot - 1, nape1 + 1):
+        for x in range(int(cx - bw * 0.18), int(cx + bw * 0.18) + 1):
+            if x < minx or x > maxx:
+                continue
+            r, g, b = op[x, y]
+            if is_magenta(r, g, b):
+                continue
+            if is_outline(r, g, b) and on_silhouette_edge(x, y, op, w, h):
+                continue
+            afx = abs(x - cx) / (bw / 2.0)
+            if afx > 0.18:
+                continue
+            if y <= head_bot:
+                op[x, y] = darken(hair, 0.70)
+            # below head_bot: leave for torso fill (no hair paint)
+
+    rebuild_outline_band(op, minx, miny, maxx, maxy, w, h, miny, head_bot)
+    return head_bot, hair
+
+
+def redraw_seated_torso(out: Image.Image, src: Image.Image, head_bot: int, frame: str, person: str, hair) -> None:
+    """Solid back-of-garment panel. No hair→shirt yoke (that made the bad band)."""
+    op = out.load()
+    w, h = out.size
+    minx, miny, maxx, maxy = bbox(src)
+    if maxx < minx:
+        return
+    bh = maxy - miny + 1
+    bw = maxx - minx + 1
+    cx = (minx + maxx) / 2.0
+
+    shirt = sample_garment_for_person(person, src)
+    shirt_d = darken(shirt, 0.90 if sum(shirt) > 600 else 0.84)
+    shirt_m = darken(shirt, 0.95 if sum(shirt) > 600 else 0.92)
+
+    _hf, torso_f = seated_bands(person, frame)
+    torso_bot = miny + int(bh * torso_f)
+
+    # Fill garment from the first pixel below hair — pure shirt, no hair mix.
+    for y in range(head_bot + 1, torso_bot + 1):
+        fy = (y - head_bot) / max(1.0, float(torso_bot - head_bot))
+        if fy < 0.12:
+            max_afx = 0.76
+        elif fy < 0.45:
+            max_afx = 0.72
+        elif fy < 0.75:
+            max_afx = 0.66
+        else:
+            max_afx = 0.56
+        for x in range(minx, maxx + 1):
+            r, g, b = op[x, y]
+            if is_magenta(r, g, b):
+                continue
+            if is_outline(r, g, b) and on_silhouette_edge(x, y, op, w, h):
+                continue
+            fx = (x - cx) / (bw / 2.0)
+            afx = abs(fx)
+
+            if afx > max_afx:
+                if frame.startswith("type") and fy > 0.35 and afx < max_afx + 0.28:
+                    if is_skin(r, g, b):
+                        op[x, y] = shirt_d if afx < max_afx + 0.14 else shirt_m
+                    elif r > 200 and g > 190 and b > 150:
+                        op[x, y] = shirt
+                elif is_skin(r, g, b) and afx < max_afx + 0.20 and fy < 0.90:
+                    op[x, y] = shirt_m
+                continue
+
+            op[x, y] = shirt_shade(shirt, afx, x, y)
+
+    # Erase chair armrest / side-rail blobs left from front sit sheets.
+    # Dark vertical stubs outside the garment silhouette read as wrong color.
+    for y in range(head_bot + 1, torso_bot + 1):
+        fy = (y - head_bot) / max(1.0, float(torso_bot - head_bot))
+        max_afx = 0.76 if fy < 0.12 else (0.72 if fy < 0.45 else (0.66 if fy < 0.75 else 0.56))
+        for x in range(minx, maxx + 1):
+            r, g, b = op[x, y]
+            if is_magenta(r, g, b):
+                continue
+            afx = abs(x - cx) / (bw / 2.0)
+            if afx < max_afx + 0.02:
+                continue
+            # Dark chair wood / metal outside the body → cut to magenta.
+            if (r + g + b) < 90 and not near((r, g, b), shirt, 55):
+                op[x, y] = (255, 0, 255)
+                continue
+            # Grey chair plastic outside body → cut.
+            if afx > max_afx + 0.08 and abs(r - g) < 18 and abs(g - b) < 18 and 40 < r < 160:
+                op[x, y] = (255, 0, 255)
+
+    # One-pixel collar seam in darkened shirt (not hair) under the nape.
+    collar_y = head_bot + 1
+    if collar_y <= torso_bot:
+        for x in range(int(cx - bw * 0.32), int(cx + bw * 0.32) + 1):
+            if x < minx or x > maxx:
+                continue
+            r, g, b = op[x, collar_y]
+            if is_magenta(r, g, b):
+                continue
+            if is_outline(r, g, b) and on_silhouette_edge(x, collar_y, op, w, h):
+                continue
+            afx = abs(x - cx) / (bw / 2.0)
+            if afx > 0.55:
+                continue
+            op[x, collar_y] = shirt_d
+
+    # Scrub skin / bright collar / drawstring / leftover hair in torso band.
+    for y in range(head_bot + 1, torso_bot + 1):
+        for x in range(int(cx - bw * 0.52), int(cx + bw * 0.52) + 1):
+            if x < minx or x > maxx:
+                continue
+            r, g, b = op[x, y]
+            if is_magenta(r, g, b) or (is_outline(r, g, b) and on_silhouette_edge(x, y, op, w, h)):
+                continue
+            afx = abs(x - cx) / (bw / 2.0)
+            if is_skin(r, g, b):
+                op[x, y] = shirt_m
+            elif near((r, g, b), hair, 45) and not near((r, g, b), shirt, 50):
+                # Kill hair bleed that survived into the garment band.
+                op[x, y] = shirt_shade(shirt, afx, x, y)
+            elif afx < 0.35 and r > 205 and g > 195 and b > 160 and not near((r, g, b), shirt, 55):
+                if sum(shirt) < 550:
+                    op[x, y] = shirt
+
+    rebuild_outline_band(op, minx, miny, maxx, maxy, w, h, head_bot, torso_bot)
+
+
+def _gather_band(px, minx, miny, maxx, maxy, bh, bw, cx, y0f, y1f):
+    out = []
+    y0 = miny + int(bh * y0f)
+    y1 = min(maxy + 1, miny + int(bh * y1f))
+    for y in range(y0, y1):
+        for x in range(minx, maxx + 1):
+            r, g, b = px[x, y]
+            if is_magenta(r, g, b) or is_outline(r, g, b) or is_skin(r, g, b):
+                continue
+            if r > 235 and g > 235 and b > 235:
+                continue
+            fx = abs(x - cx) / (bw / 2.0)
+            if fx < 0.12 or fx > 0.90:
+                continue
+            out.append((r, g, b))
+    return out
+
+
+def _gather_thigh(px, minx, miny, maxx, maxy, bh, bw, cx, y0f, y1f):
+    """Thigh/pants pixels including center (shorts are often central).
+
+    Do NOT use full is_skin() — khaki / tan pants (r≈g, muted) match the
+    loose skin heuristic and would be dropped, leaving only shoe-brown.
+    Only skip bright peach hand/face skin.
+    """
+    out = []
+    y0 = miny + int(bh * y0f)
+    y1 = min(maxy + 1, miny + int(bh * y1f))
+    for y in range(y0, y1):
+        for x in range(minx, maxx + 1):
+            r, g, b = px[x, y]
+            if is_magenta(r, g, b) or is_outline(r, g, b):
+                continue
+            # Bright peach only (hands / knees), keep khaki & grey pants.
+            peach = r > 190 and g > 140 and b > 100 and (r - g) > 25
+            if peach:
+                continue
+            if r > 235 and g > 235 and b > 235:
+                continue
+            fx = abs(x - cx) / (bw / 2.0)
+            if fx > 0.72:
+                continue
+            out.append((r, g, b))
+    return out
+
+
+def sample_seated_leg_colors(person: str, sit: Image.Image):
+    """Pants from walk thigh (incl. center); shoes from sit toe tips.
+
+    Never reuse the shirt/coat color — that produced navy/teal 'pants' bands.
+    """
+    sp = sit.load()
+    sminx, sminy, smaxx, smaxy = bbox(sit)
+    sbh = smaxy - sminy + 1
+
+    tip = []
+    for y in range(smaxy - max(5, int(sbh * 0.045)), smaxy + 1):
+        for x in range(sminx, smaxx + 1):
+            r, g, b = sp[x, y]
+            if is_magenta(r, g, b) or is_outline(r, g, b) or is_skin(r, g, b):
+                continue
+            tip.append((r, g, b))
+    tip_cnt: Counter = Counter(quant(s) for s in tip)
+    shoes = tip_cnt.most_common(1)[0][0] if tip_cnt else (48, 32, 24)
+    shoe_lum = sum(shoes)
+
+    shirt = sample_garment_for_person(person, sit)
+
+    walk_path = SRC / f"{person}_walk0.png"
+    candidates = []
+    if walk_path.exists():
+        walk = Image.open(walk_path).convert("RGB")
+        wp = walk.load()
+        wminx, wminy, wmaxx, wmaxy = bbox(walk)
+        wbh = wmaxy - wminy + 1
+        wbw = wmaxx - wminx + 1
+        wcx = (wminx + wmaxx) / 2.0
+        for y0f, y1f, wmul in ((0.74, 0.82, 1.2), (0.72, 0.80, 1.05), (0.70, 0.78, 0.9)):
+            samples = _gather_thigh(wp, wminx, wminy, wmaxx, wmaxy, wbh, wbw, wcx, y0f, y1f)
+            if len(samples) < 40:
+                continue
+            cnt: Counter = Counter(quant(s) for s in samples)
+            for col, n in cnt.most_common(10):
+                if near(col, shirt, 50):
+                    continue
+                # Reject near-white coat leftovers and near-shoe clumps.
+                lum = sum(col)
+                if lum > 600:
+                    continue
+                d_shoe = cdist(col, shoes)
+                if d_shoe < 30 and n < len(samples) * 0.20:
+                    continue
+                score = n * wmul
+                # Prefer khaki / grey / olive pants (mid luminance, not neon).
+                if 140 < lum < 520:
+                    score *= 1.45
+                if d_shoe > 50:
+                    score *= 1.15
+                # Slight preference for warmer khaki over cold navy bleed.
+                r, g, b = col
+                if r > g - 10 and g > b + 15 and r > 100:
+                    score *= 1.2
+                candidates.append((score, col))
+
+    if candidates:
+        candidates.sort(reverse=True)
+        pants = candidates[0][1]
+    else:
+        sbw = smaxx - sminx + 1
+        scx = (sminx + smaxx) / 2.0
+        sit_thigh = _gather_thigh(sp, sminx, sminy, smaxx, smaxy, sbh, sbw, scx, 0.76, 0.88)
+        filtered = [s for s in sit_thigh if not near(quant(s), shirt, 50)]
+        cnt = Counter(quant(s) for s in (filtered or sit_thigh)) if sit_thigh else Counter()
+        pants = cnt.most_common(1)[0][0] if cnt else (80, 80, 80)
+        if near(pants, shirt, 50):
+            pants = darken(shirt, 0.55)
+    return pants, shoes
+
+
+def pants_leg_shade(pants, fx: float, fy: float, x: int, y: int):
+    pd = darken(pants, 0.78)
+    pm = darken(pants, 0.90)
+    if abs(fx) < 0.10 and fy > 0.20:
+        return pd if ((x + y) % 3 == 0) else pm
+    if abs(fx) > 0.75:
+        return pd if ((x * 3 + y) % 5 == 0) else pm
+    if fy > 0.78:
+        return darken(pants, 0.84) if ((x + y) % 4 == 0) else pm
+    return pants if ((x + y) % 6) else pm
+
+
+def shoe_heel_shade(shoes, nfx: float, t: float, x: int, y: int):
+    lum = sum(shoes)
+    shoe_d = darken(shoes, 0.42 if lum > 480 else 0.65)
+    shoe_m = darken(shoes, 0.78 if lum > 480 else 0.86)
+    shoe_l = tuple(min(255, int(v * 1.10)) for v in shoes)
+    if t > 0.80:
+        return shoe_d
+    if nfx < 0.22:
+        return shoe_d if ((x + y) % 3 == 0) else shoe_m
+    if nfx > 0.82:
+        return shoe_l if lum > 400 else shoes
+    return shoes if ((x + y) % 4) else shoe_m
+
+
+def redraw_seated_legs(out: Image.Image, src: Image.Image, frame: str, person: str) -> None:
+    """Replace front sit/type legs with back-of-legs + heel silhouettes."""
+    op = out.load()
+    px = src.load()
+    w, h = out.size
+    minx, miny, maxx, maxy = bbox(src)
+    if maxx < minx:
+        return
+    bh = maxy - miny + 1
+    bw = maxx - minx + 1
+    cx = (minx + maxx) / 2.0
+    pants, shoes = sample_seated_leg_colors(person, src)
+    mag = (255, 0, 255)
+
+    _hf, torso_f = seated_bands(person, frame)
+    leg_top = miny + int(bh * torso_f)
+
+    shoe_top = miny + int(bh * 0.905)
+    heel_bot = maxy - max(2, int(bh * 0.035))
+    if heel_bot <= shoe_top + 4:
+        shoe_top = heel_bot - max(6, int(bh * 0.04))
+
+    for y in range(leg_top, shoe_top + 1):
+        fy = (y - leg_top) / max(1.0, float(shoe_top - leg_top))
+        max_afx = 0.82 - 0.22 * (fy ** 1.05)
+        for x in range(minx, maxx + 1):
+            r, g, b = op[x, y]
+            if is_magenta(r, g, b):
+                continue
+            fx = (x - cx) / (bw / 2.0)
+            afx = abs(fx)
+            if afx > max_afx:
+                op[x, y] = mag
+                continue
+            if is_outline(r, g, b) and on_silhouette_edge(x, y, op, w, h):
+                continue
+            op[x, y] = pants_leg_shade(pants, fx, fy, x, y)
+
+    for y in range(leg_top, shoe_top + 1):
+        for x in range(minx, maxx + 1):
+            r, g, b = op[x, y]
+            if is_magenta(r, g, b):
+                continue
+            if on_silhouette_edge(x, y, op, w, h):
+                op[x, y] = (14, 12, 10)
+
+    seam_x0 = int(cx - max(1, bw * 0.02))
+    seam_x1 = int(cx + max(1, bw * 0.02))
+    for y in range(leg_top + int((shoe_top - leg_top) * 0.25), shoe_top - 2):
+        for x in range(seam_x0, seam_x1 + 1):
+            r, g, b = op[x, y]
+            if is_magenta(r, g, b) or is_outline(r, g, b):
+                continue
+            op[x, y] = darken(pants, 0.62)
+
+    for y in range(shoe_top, maxy + 1):
+        for x in range(minx, maxx + 1):
+            if not is_magenta(*op[x, y]):
+                op[x, y] = mag
+
+    left_xs, right_xs = [], []
+    for y in range(miny + int(bh * 0.88), maxy + 1):
+        for x in range(minx, maxx + 1):
+            if is_magenta(*px[x, y]):
+                continue
+            (left_xs if x < cx else right_xs).append(x)
+
+    def paint_heel(xs, side):
+        if not xs:
+            return
+        x0, x1 = min(xs), max(xs)
+        raw_cx = (x0 + x1) / 2.0
+        foot_cx = cx + (raw_cx - cx) * 0.55
+        foot_hw = max(5.0, min(bw * 0.11, (x1 - x0) / 2.0 * 0.42))
+        for y in range(shoe_top, heel_bot + 1):
+            t = (y - shoe_top) / max(1.0, float(heel_bot - shoe_top))
+            half = foot_hw * (0.95 - 0.55 * (t ** 1.1))
+            painted = []
+            for x in range(int(foot_cx - half - 1), int(foot_cx + half + 2)):
+                if x < minx or x > maxx:
+                    continue
+                dx = abs(x - foot_cx)
+                if dx > half:
+                    continue
+                op[x, y] = shoe_heel_shade(shoes, dx / max(1.0, half), t, x, y)
+                painted.append(x)
+            if painted:
+                op[min(painted), y] = (12, 10, 8)
+                op[max(painted), y] = (12, 10, 8)
+            if t > 0.88 and painted:
+                for x in painted:
+                    op[x, y] = (12, 10, 8)
+        cuff0 = shoe_top - max(2, int(bh * 0.012))
+        for y in range(cuff0, shoe_top + 1):
+            for x in range(int(foot_cx - foot_hw * 1.15), int(foot_cx + foot_hw * 1.15) + 1):
+                if x < minx or x > maxx:
+                    continue
+                r, g, b = op[x, y]
+                if is_magenta(r, g, b):
+                    if y < shoe_top and abs(x - foot_cx) <= foot_hw * 0.95:
+                        op[x, y] = darken(pants, 0.72)
+                    continue
+                if is_outline(r, g, b) and on_silhouette_edge(x, y, op, w, h):
+                    continue
+                if near((r, g, b), pants, 55) or y >= shoe_top:
+                    op[x, y] = darken(pants, 0.68)
+
+    paint_heel(left_xs, "L")
+    paint_heel(right_xs, "R")
+
+
+def soften_front_accents(op, minx, miny, maxx, maxy, bh, bw, cx, head_bot, shirt):
+    """Walk/idle: gently lift bright drawstrings / logos toward shirt (no full redraw)."""
+    torso_top = head_bot
+    torso_bot = miny + int(bh * 0.68)
+    for y in range(torso_top, torso_bot + 1):
+        for x in range(minx, maxx + 1):
+            r, g, b = op[x, y]
+            if is_magenta(r, g, b) or is_outline(r, g, b):
+                continue
+            if is_skin(r, g, b):
+                continue
+            fx = abs(x - cx) / (bw / 2.0)
+            if fx > 0.28:
+                continue
+            bright = r > 210 and g > 210 and b > 190
+            very_contrast = abs(r - shirt[0]) + abs(g - shirt[1]) + abs(b - shirt[2]) > 140
+            if bright and fx < 0.20:
+                mix = 0.55
+                op[x, y] = tuple(
+                    int(r * (1 - mix) + shirt[i] * mix) for i, r in enumerate((r, g, b))
+                )
+            elif very_contrast and bright:
+                op[x, y] = darken(shirt, 0.95)
+
+
+def make_back(src: Image.Image, frame: str = "", person: str = "") -> Image.Image:
+    im = src.convert("RGB")
+    w, h = im.size
+    px = im.load()
+    out = im.copy()
+    op = out.load()
+    minx, miny, maxx, maxy = bbox(im)
+    if maxx < minx:
+        return out
+    bh = maxy - miny + 1
+    bw = maxx - minx + 1
+    cx = (minx + maxx) / 2.0
+
+    seated = frame.startswith("sit") or frame.startswith("type")
+
+    if seated:
+        head_bot, hair = redraw_seated_head(out, im, person, frame=frame)
+        redraw_seated_torso(out, im, head_bot, frame, person, hair)
+        if person:
+            redraw_seated_legs(out, im, frame, person)
+        return out
+
+    # --- Walk/idle: hair mass + soften front accents (lighter touch). ---
+    head_depth = 0.44
+    head_rx_mul = 0.46
+    head_ry_mul = 0.24
+
+    hair, crown, _hat = sample_hair_from_sheets(person) if person else ((90, 60, 40), [(90, 60, 40)], None)
+
+    ss = []
+    side = max(14, bw // 5)
+    for y in range(miny + int(bh * 0.50), miny + int(bh * 0.60)):
+        for x in list(range(minx, minx + side)) + list(range(maxx - side + 1, maxx + 1)):
+            ss.append(px[x, y])
+    shirt = mode_color(ss)
+
+    head_cx = cx
+    head_cy = miny + bh * 0.23
+    head_rx = bw * head_rx_mul
+    head_ry = bh * head_ry_mul
+    head_bot = miny + int(bh * head_depth)
+
+    chin_y = head_bot
+    for y in range(miny + int(bh * 0.20), miny + int(bh * 0.55)):
+        for x in range(int(cx - bw * 0.18), int(cx + bw * 0.18) + 1):
+            r, g, b = px[x, y]
+            if is_skin(r, g, b):
+                chin_y = max(chin_y, y + int(bh * 0.02))
+    head_bot = max(head_bot, chin_y)
+
+    for y in range(miny, head_bot + 1):
+        for x in range(minx, maxx + 1):
+            r, g, b = px[x, y]
+            if is_magenta(r, g, b):
+                continue
+            if is_outline(r, g, b) and on_silhouette_edge(x, y, px, w, h):
+                continue
+            nx = (x - head_cx) / head_rx
+            ny = (y - head_cy) / head_ry
+            dist = nx * nx + ny * ny
+            fy = (y - miny) / float(bh)
+            fx = (x - cx) / (bw / 2.0)
+            in_mass = dist <= 1.25 or (fy * bh <= (head_bot - miny) and abs(fx) < 0.94)
+            if not in_mass:
+                continue
+            face_band = fy > 0.14
+            hairish = near((r, g, b), hair, 55)
+            if hairish and not face_band and not is_skin(r, g, b):
+                continue
+            head_fy = max(0.0, min(1.0, (y - (head_cy - head_ry)) / max(1.0, 2 * head_ry)))
+            op[x, y] = hair_shade(hair, fx, head_fy, x, y, crown)
+
+    scrub_bot = max(head_bot + int(bh * 0.02), miny + int(bh * 0.50))
+    for y in range(miny, scrub_bot + 1):
+        for x in range(minx, maxx + 1):
+            r, g, b = op[x, y]
+            if is_magenta(r, g, b):
+                continue
+            if is_outline(r, g, b) and on_silhouette_edge(x, y, op, w, h):
+                continue
+            fy = (y - miny) / float(bh)
+            fx = (x - cx) / (bw / 2.0)
+            if y > head_bot and not is_skin(r, g, b):
+                continue
+            skinish = is_skin(r, g, b)
+            bright = r > 195 and g > 175 and b > 140 and abs(fx) < 0.75
+            blush = r > 170 and g < 150 and b < 150 and (r - g) > 35
+            glass = abs(r - g) < 28 and abs(g - b) < 28 and 80 < r < 190 and abs(fx) < 0.72
+            if skinish or bright or blush or glass or y <= head_bot:
+                if y <= head_bot or skinish or bright or blush:
+                    head_fy = max(
+                        0.0, min(1.0, (y - (head_cy - head_ry)) / max(1.0, 2 * head_ry))
+                    )
+                    op[x, y] = hair_shade(hair, fx, head_fy, x, y, crown)
+
+    for y in range(head_bot, head_bot + max(2, int(bh * 0.025))):
+        for x in range(int(cx - bw * 0.20), int(cx + bw * 0.20) + 1):
+            if x < minx or x > maxx:
+                continue
+            r, g, b = op[x, y]
+            if is_magenta(r, g, b) or is_outline(r, g, b):
+                continue
+            if is_skin(r, g, b) or near((r, g, b), hair, 60):
+                op[x, y] = darken(hair, 0.62)
+
+    soften_front_accents(op, minx, miny, maxx, maxy, bh, bw, cx, head_bot, shirt)
+    return out
+
+
+def main() -> None:
+    written = 0
+    for person in PEOPLE:
+        for frame in FRAMES:
+            path = SRC / f"{person}_{frame}.png"
+            if not path.exists():
+                print("missing", path)
+                continue
+            back = make_back(Image.open(path), frame=frame, person=person)
+            out = SRC / f"{person}_{frame}_back.png"
+            back.save(out)
+            written += 1
+    print(f"wrote {written} back frames into {SRC}")
+
+
+if __name__ == "__main__":
+    main()

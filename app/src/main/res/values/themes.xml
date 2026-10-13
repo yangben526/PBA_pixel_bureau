@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.PixelBureau" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">#161410</item>
+        <item name="android:navigationBarColor">#1C1A17</item>
+        <item name="android:windowBackground">#161410</item>
+        <item name="android:colorControlHighlight">#00000000</item>
+    </style>
+</resources>

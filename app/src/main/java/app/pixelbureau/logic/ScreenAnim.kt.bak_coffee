@@ -1,0 +1,180 @@
+package app.pixelbureau.logic
+
+/**
+ * One terminal segment on a laptop screen overlay.
+ * [row] is 0..(rowCount-1) from top of the glass; [start]/[end] are
+ * 0..1 across that row; [bright] picks the lit vs dim glyph color;
+ * [prompt] marks the left-edge `$` / `>` stub so rows read as a shell.
+ */
+data class ScreenGlyph(
+    val row: Int,
+    val start: Float,
+    val end: Float,
+    val bright: Boolean,
+    val prompt: Boolean = false,
+)
+
+/**
+ * Desk indices whose laptop screens should animate, mapped to the typing
+ * agent's animation frame. Only [ActorSnap.anim] == "type" counts — idle sit
+ * ("done"), empty desks, and walkers leave the wallpaper alone.
+ */
+fun desksWithActiveScreens(actors: List<ActorSnap>): Map<Int, Int> {
+    val lit = LinkedHashMap<Int, Int>()
+    for (actor in actors) {
+        val desk = actor.deskIndex ?: continue
+        if (actor.anim == "type") {
+            lit[desk] = actor.frame
+        }
+    }
+    return lit
+}
+
+/**
+ * Terminal-typing pattern for one animation frame. Deterministic, no
+ * allocations beyond the returned list — safe to call every draw.
+ *
+ * Rows above the active line stay full (already typed). The active line
+ * grows left→right with the frame. A short prompt stub leads each row.
+ */
+fun screenCodeGlyphs(frame: Int, rows: Int = 6): List<ScreenGlyph> {
+    val phase = frame.mod(12)
+    val activeRow = phase.mod(rows)
+    val typeProgress = ((phase % 4) + 1) / 4f
+    val glyphs = ArrayList<ScreenGlyph>(rows * 3)
+    for (row in 0 until rows) {
+        val seed = (row * 5 + (frame / 12) * 3).mod(11)
+        val indent = 0.10f + (seed % 3) * 0.04f
+        val fullLen = 0.22f + (seed % 5) * 0.10f
+        // Prompt stub (`$` / `>`) on every row.
+        glyphs.add(ScreenGlyph(row, 0.04f, 0.09f, bright = true, prompt = true))
+        val progress = when {
+            row < activeRow -> 1f
+            row == activeRow -> typeProgress
+            else -> 0f
+        }
+        if (progress <= 0.02f) continue
+        val start = indent
+        val end = (start + fullLen * progress).coerceAtMost(0.92f)
+        glyphs.add(
+            ScreenGlyph(
+                row,
+                start,
+                end,
+                bright = row == activeRow || (row + phase).mod(3) != 0,
+            ),
+        )
+        // Extra token on completed lines (reads as `cmd --flag`).
+        if (progress >= 0.99f && seed >= 4 && end < 0.72f) {
+            val s2 = (end + 0.05f).coerceAtMost(0.82f)
+            val e2 = (s2 + 0.10f + (seed % 3) * 0.06f).coerceAtMost(0.94f)
+            if (e2 > s2 + 0.04f) {
+                glyphs.add(ScreenGlyph(row, s2, e2, bright = false))
+            }
+        }
+    }
+    return glyphs
+}
+
+/** True on even blink ticks — draw a block cursor after the active line. */
+fun screenCursorVisible(frame: Int): Boolean = (frame / 2).mod(2) == 0
+
+/** Row index (0-based) that currently has the typing caret. */
+fun screenCursorRow(frame: Int, rows: Int = 6): Int = frame.mod(12).mod(rows)
+
+/** 0..1 caret column along the active row (just past typed text). */
+fun screenCursorCol(frame: Int, rows: Int = 6): Float {
+    val phase = frame.mod(12)
+    val activeRow = phase.mod(rows)
+    val typeProgress = ((phase % 4) + 1) / 4f
+    val seed = (activeRow * 5 + (frame / 12) * 3).mod(11)
+    val indent = 0.10f + (seed % 3) * 0.04f
+    val fullLen = 0.22f + (seed % 5) * 0.10f
+    return (indent + fullLen * typeProgress).coerceAtMost(0.92f)
+}
+
+/**
+ * One LED region on the cropped server sprite (fractions of keyAndCrop bounds).
+ * Dots blink on/off. [green] picks phosphor tint (else amber).
+ * [phase] 0..1 offsets the blink so neighbors stay asynchronous.
+ * [periodMs] full cycle length for that element.
+ * [bar] retained for API stability; long glow bars were removed — all entries are dots.
+ */
+data class ServerLed(
+    val left: Float,
+    val top: Float,
+    val right: Float,
+    val bottom: Float,
+    val green: Boolean,
+    val bar: Boolean,
+    val phase: Float,
+    val periodMs: Int,
+)
+
+/**
+ * LED quads mapped to the single-rack sprite (keyAndCrop of magenta-keyed ref).
+ * Small indicator dots blink async (long bar / square glow overlays removed).
+ */
+fun serverLeds(): List<ServerLed> {
+    // Single rack — small indicator dots only; no long bar / square glow overlays.
+    return listOf(
+        ServerLed(0.9473f, 0.2696f, 0.9644f, 0.2836f, green = true, bar = false, phase = 0.00f, periodMs = 740),
+        ServerLed(0.9499f, 0.2960f, 0.9618f, 0.3050f, green = true, bar = false, phase = 0.37f, periodMs = 780),
+        ServerLed(0.9499f, 0.3124f, 0.9618f, 0.3240f, green = true, bar = false, phase = 0.74f, periodMs = 820),
+        ServerLed(0.6482f, 0.3248f, 0.6548f, 0.3281f, green = true, bar = false, phase = 0.11f, periodMs = 860),
+        ServerLed(0.7589f, 0.3339f, 0.7694f, 0.3421f, green = true, bar = false, phase = 0.48f, periodMs = 900),
+        ServerLed(0.5389f, 0.3652f, 0.5520f, 0.3768f, green = true, bar = false, phase = 0.85f, periodMs = 940),
+        ServerLed(0.5402f, 0.3990f, 0.5520f, 0.4106f, green = true, bar = false, phase = 0.22f, periodMs = 980),
+        ServerLed(0.6430f, 0.4106f, 0.6588f, 0.4237f, green = true, bar = false, phase = 0.59f, periodMs = 1020),
+        ServerLed(0.6430f, 0.4270f, 0.6588f, 0.4402f, green = true, bar = false, phase = 0.96f, periodMs = 1060),
+        ServerLed(0.5916f, 0.4312f, 0.6047f, 0.4378f, green = true, bar = false, phase = 0.33f, periodMs = 1100),
+        ServerLed(0.5402f, 0.4345f, 0.5520f, 0.4460f, green = true, bar = false, phase = 0.70f, periodMs = 1140),
+        ServerLed(0.9486f, 0.4617f, 0.9644f, 0.4765f, green = false, bar = false, phase = 0.07f, periodMs = 1180),
+        ServerLed(0.5402f, 0.4691f, 0.5520f, 0.4806f, green = true, bar = false, phase = 0.44f, periodMs = 1220),
+        ServerLed(0.9499f, 0.4905f, 0.9618f, 0.4988f, green = true, bar = false, phase = 0.81f, periodMs = 1260),
+        ServerLed(0.9499f, 0.5070f, 0.9618f, 0.5185f, green = true, bar = false, phase = 0.18f, periodMs = 1300),
+        ServerLed(0.7589f, 0.5301f, 0.7681f, 0.5375f, green = false, bar = false, phase = 0.55f, periodMs = 740),
+        ServerLed(0.7431f, 0.5342f, 0.7523f, 0.5425f, green = false, bar = false, phase = 0.92f, periodMs = 780),
+        ServerLed(0.7273f, 0.5392f, 0.7365f, 0.5474f, green = false, bar = false, phase = 0.29f, periodMs = 820),
+        ServerLed(0.7115f, 0.5433f, 0.7220f, 0.5515f, green = false, bar = false, phase = 0.66f, periodMs = 860),
+        ServerLed(0.6943f, 0.5482f, 0.7049f, 0.5565f, green = false, bar = false, phase = 0.03f, periodMs = 900),
+        ServerLed(0.6759f, 0.5532f, 0.6877f, 0.5614f, green = false, bar = false, phase = 0.40f, periodMs = 940),
+        ServerLed(0.6522f, 0.5606f, 0.6640f, 0.5697f, green = false, bar = false, phase = 0.77f, periodMs = 980),
+        ServerLed(0.5402f, 0.5589f, 0.5520f, 0.5705f, green = false, bar = false, phase = 0.14f, periodMs = 1020),
+        ServerLed(0.6324f, 0.5664f, 0.6443f, 0.5754f, green = false, bar = false, phase = 0.51f, periodMs = 1060),
+        ServerLed(0.6140f, 0.5721f, 0.6258f, 0.5804f, green = false, bar = false, phase = 0.88f, periodMs = 1100),
+        ServerLed(0.5968f, 0.5771f, 0.6074f, 0.5862f, green = false, bar = false, phase = 0.25f, periodMs = 1140),
+        ServerLed(0.5402f, 0.5944f, 0.5520f, 0.6059f, green = true, bar = false, phase = 0.62f, periodMs = 1180),
+        ServerLed(0.6430f, 0.6068f, 0.6588f, 0.6200f, green = true, bar = false, phase = 0.99f, periodMs = 1220),
+        ServerLed(0.6430f, 0.6232f, 0.6588f, 0.6364f, green = true, bar = false, phase = 0.36f, periodMs = 1260),
+        ServerLed(0.5929f, 0.6265f, 0.6047f, 0.6340f, green = true, bar = false, phase = 0.73f, periodMs = 1300),
+        ServerLed(0.5402f, 0.6298f, 0.5520f, 0.6414f, green = true, bar = false, phase = 0.10f, periodMs = 740),
+        ServerLed(0.8564f, 0.6546f, 0.8643f, 0.6570f, green = true, bar = false, phase = 0.47f, periodMs = 780),
+        ServerLed(0.8379f, 0.6595f, 0.8458f, 0.6628f, green = true, bar = false, phase = 0.84f, periodMs = 820),
+        ServerLed(0.5402f, 0.6653f, 0.5520f, 0.6768f, green = true, bar = false, phase = 0.21f, periodMs = 860),
+        ServerLed(0.9486f, 0.6636f, 0.9644f, 0.6785f, green = true, bar = false, phase = 0.58f, periodMs = 900),
+        ServerLed(0.9499f, 0.6908f, 0.9631f, 0.6991f, green = true, bar = false, phase = 0.95f, periodMs = 940),
+        ServerLed(0.9499f, 0.7073f, 0.9631f, 0.7189f, green = true, bar = false, phase = 0.32f, periodMs = 980),
+        ServerLed(0.7589f, 0.7279f, 0.7681f, 0.7362f, green = true, bar = false, phase = 0.69f, periodMs = 1020),
+        ServerLed(0.5389f, 0.7593f, 0.5520f, 0.7708f, green = true, bar = false, phase = 0.06f, periodMs = 1060),
+        ServerLed(0.5955f, 0.7749f, 0.6074f, 0.7848f, green = true, bar = false, phase = 0.43f, periodMs = 1100),
+        ServerLed(0.5402f, 0.7947f, 0.5520f, 0.8063f, green = true, bar = false, phase = 0.80f, periodMs = 1140),
+        ServerLed(0.6430f, 0.8087f, 0.6588f, 0.8219f, green = true, bar = false, phase = 0.17f, periodMs = 1180),
+        ServerLed(0.5929f, 0.8277f, 0.6047f, 0.8351f, green = true, bar = false, phase = 0.54f, periodMs = 1220),
+        ServerLed(0.6430f, 0.8252f, 0.6588f, 0.8384f, green = true, bar = false, phase = 0.91f, periodMs = 1260),
+        ServerLed(0.5402f, 0.8302f, 0.5520f, 0.8425f, green = true, bar = false, phase = 0.28f, periodMs = 1300),
+        ServerLed(0.5402f, 0.8656f, 0.5520f, 0.8763f, green = true, bar = false, phase = 0.65f, periodMs = 740),
+    )
+}
+
+
+/**
+ * 0..1 draw strength for one LED at [nowMs].
+ * Dots hard-blink (~55% duty) with per-LED phase/period.
+ */
+fun serverLedStrength(led: ServerLed, nowMs: Long): Float {
+    val period = led.periodMs.coerceAtLeast(1)
+    val t = ((nowMs % period).toFloat() / period + led.phase).mod(1f)
+    // Async blink — on most of the cycle, short dark gap.
+    return if (t < 0.55f || t > 0.78f) 1f else 0.08f
+}
