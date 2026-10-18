@@ -12,6 +12,8 @@ import app.pixelbureau.logic.SseEvent
 import app.pixelbureau.logic.TurnMessage
 import app.pixelbureau.logic.DefaultOutputStyle
 import app.pixelbureau.logic.HireRoleAll
+import app.pixelbureau.logic.HireRoleGeneral
+import app.pixelbureau.logic.candidatesForRole
 import app.pixelbureau.logic.hireRoleFilters
 import app.pixelbureau.logic.instructionEditCostsStar
 import app.pixelbureau.logic.matches
@@ -1926,21 +1928,21 @@ class BureauLogicTest {
         )
         val finance = rollCandidatePool(Random(1), count = 3, avoid = others)
         assertEquals(3, finance.size)
-        assertTrue(finance.all { it.name in setOf("June", "Pax", "Ivo", "Kenji Tanaka", "Sari Kim", "Diego Santos") })
+        assertTrue(finance.all { it.name in setOf("June", "Pax", "Ivo", "Kenji Tanaka", "Sari Kim", "Diego Santos", "Bo Wang", "Ren Takahashi") })
         assertTrue(finance.all { it.role == "Finance" && it.skills.isNotEmpty() })
         assertTrue(finance.all { it.instructions.isNotBlank() && it.outputPersonality.isNotBlank() })
         assertTrue(finance.all { it.matches(it.skills.first(), "Finance") })
         assertTrue(finance.none { it.matches(it.name, "Operations") })
         assertTrue(opening.all { it.matches(it.name, "Finance") })
         assertEquals("kenji", opening[0].portraitKey)
-        assertEquals("pixel", opening[0].hiredLook())
+        assertEquals("kenji", opening[0].hiredLook())
         assertEquals("sari", opening[1].portraitKey)
-        assertEquals("kai", opening[1].hiredLook())
+        assertEquals("sari", opening[1].hiredLook())
         assertEquals("diego", opening[2].portraitKey)
-        assertEquals("byte", opening[2].hiredLook())
+        assertEquals("diego", opening[2].hiredLook())
         val everyone = rollCandidatePool(Random(2), count = 40)
-        assertEquals(24, everyone.map { it.name }.toSet().size)
-        assertEquals(24, everyone.map { it.portraitKey }.toSet().size)
+        assertEquals(36, everyone.map { it.name }.toSet().size)
+        assertEquals(36, everyone.map { it.portraitKey }.toSet().size)
         assertTrue(everyone.all { person -> looks.any { it.first == person.hiredLook() } })
         for (name in listOf("Pixel", "Kai", "Byte", "Ops", "Cursor", "You")) {
             val person = everyone.first { it.name == name }
@@ -1948,14 +1950,42 @@ class BureauLogicTest {
             assertEquals(name.lowercase(), person.hiredLook())
             assertTrue(person.skills.isNotEmpty())
             assertTrue(person.instructions.isNotBlank() && person.outputPersonality.isNotBlank())
-            assertTrue(hireRoleFilters.contains(person.role))
+            assertEquals(HireRoleGeneral, person.role)
+            assertTrue(person.matches(person.name, HireRoleAll))
+            assertTrue(hireRoleFilters.filter { it != HireRoleAll }.none { person.matches(person.name, it) })
         }
+        for (dept in hireRoleFilters.filter { it != HireRoleAll }) {
+            val batch = rollCandidatePool(Random(5), count = 12, role = dept)
+            assertTrue(batch.isNotEmpty())
+            assertTrue(batch.all { it.role == dept })
+        }
+        val mixed = rollCandidatePool(Random(2), count = 40, role = HireRoleAll)
+        assertTrue(listOf("Pixel", "Kai", "Byte", "Ops", "Cursor", "You").all { name -> mixed.any { it.name == name } })
+        val bench = candidatesForRole(HireRoleAll)
+        assertEquals(36, bench.map { it.name }.toSet().size)
+        assertEquals(7, candidatesForRole(HireRoleGeneral).size)
+        assertTrue(candidatesForRole(HireRoleGeneral).all { it.role == HireRoleGeneral })
+        assertTrue(candidatesForRole("Design").none { it.role == HireRoleGeneral })
+        assertTrue(candidatesForRole("Finance").all { it.role == "Finance" })
         val byName = everyone.associateBy { it.name }
-        assertEquals("ops", byName.getValue("Ames").hiredLook())
-        assertEquals("cursor", byName.getValue("Cleo").hiredLook())
-        assertEquals("pixel", byName.getValue("June").hiredLook())
-        assertEquals("kai", byName.getValue("Pax").hiredLook())
-        assertEquals("byte", byName.getValue("Ivo").hiredLook())
+        assertEquals("ames", byName.getValue("Ames").hiredLook())
+        assertEquals("cleo", byName.getValue("Cleo").hiredLook())
+        assertEquals("june", byName.getValue("June").hiredLook())
+        assertEquals("pax", byName.getValue("Pax").hiredLook())
+        assertEquals("ivo", byName.getValue("Ivo").hiredLook())
+        assertEquals("ryo", byName.getValue("Ryo").hiredLook())
+        assertEquals("yuki", byName.getValue("Yuki Tanaka").hiredLook())
+        assertEquals("minjun", byName.getValue("Minjun Park").hiredLook())
+        assertEquals("wei", byName.getValue("Wei Zhang").hiredLook())
+        assertEquals("sakura", byName.getValue("Sakura Ito").hiredLook())
+        assertEquals("jia", byName.getValue("Jia Li").hiredLook())
+        assertEquals("haruto", byName.getValue("Haruto Sato").hiredLook())
+        assertEquals("soojin", byName.getValue("Soojin Han").hiredLook())
+        assertEquals("chen", byName.getValue("Chen Liu").hiredLook())
+        assertEquals("hana", byName.getValue("Hana Kim").hiredLook())
+        assertEquals("bo", byName.getValue("Bo Wang").hiredLook())
+        assertEquals("ren", byName.getValue("Ren Takahashi").hiredLook())
+        assertEquals("lin", byName.getValue("Lin Xu").hiredLook())
         assertEquals("hugo", byName.getValue("Hugo").hiredLook())
         assertEquals("sora", byName.getValue("Sora").hiredLook())
     }

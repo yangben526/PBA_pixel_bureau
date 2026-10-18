@@ -124,6 +124,8 @@ data class BureauUi(
     val placedProps: List<PlacedProp> = emptyList(),
     /** Sprite the eight work desks use: "desk" (default / Startup Premium) or "desk_oak" (Oakwood). */
     val deskSprite: String = DESK_SPRITE_DEFAULT,
+    /** Conference room finish: "premium" (glass) or "oak" (Dream Starter boards). */
+    val confStyle: String = CONF_STYLE_PREMIUM,
     /** Open taskforces (not signed off / disbanded), oldest first. */
     val taskforces: List<TaskforceUi> = emptyList(),
     /** When set, the chat panel shows this taskforce's group thread. */
@@ -146,9 +148,19 @@ data class BureauUi(
 internal const val DESK_SPRITE_DEFAULT = "desk"
 internal const val DESK_SPRITE_OAK = "desk_oak"
 
+internal const val CONF_STYLE_PREMIUM = "premium"
+internal const val CONF_STYLE_OAK = "oak"
+
 /** Owned desk-group item → work desk art. Nothing owned keeps the original desk. */
 internal fun deskSpriteFor(owned: Map<String, Int>): String =
     if ((owned["office_desk"] ?: 0) > 0 && (owned["premium_desk"] ?: 0) <= 0) DESK_SPRITE_OAK else DESK_SPRITE_DEFAULT
+
+/**
+ * Owned conference-group item → room finish. Nothing owned keeps the glass
+ * Premium Startup room. Oakwood shows only when it is the style you own.
+ */
+internal fun confStyleFor(owned: Map<String, Int>): String =
+    if ((owned["oak_conference"] ?: 0) > 0 && (owned["premium_conference"] ?: 0) <= 0) CONF_STYLE_OAK else CONF_STYLE_PREMIUM
 
 /** Owned copies that stand on the map, as (slot, kind) in a stable order. */
 internal fun placeableCopies(owned: Map<String, Int>): List<Pair<String, String>> = buildList {
@@ -435,7 +447,14 @@ class BureauViewModel(app: Application) : AndroidViewModel(app) {
         val all = placed + preview
         sim.setPlacedObstacles(all.flatMap { it.cells }.toSet())
         sim.setPlacedKinds(all.associate { it.cell to it.kind })
-        _ui.update { it.copy(ownedItems = owned, placedProps = all, deskSprite = deskSpriteFor(owned)) }
+        _ui.update {
+            it.copy(
+                ownedItems = owned,
+                placedProps = all,
+                deskSprite = deskSpriteFor(owned),
+                confStyle = confStyleFor(owned),
+            )
+        }
     }
 
     /**
@@ -452,9 +471,10 @@ class BureauViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Pazada / Pamazon / Pmart Buy. Non-desk items need a free map cell first:
-     * no room → refuse before any star is spent. Then spend stars, record the
-     * item and pin the new copy to its cell. Desk-group items swap the desk art.
+     * Pazada / Pamazon / Pmart Buy. Items outside an exclusive group need a free
+     * map cell first: no room → refuse before any star is spent. Then spend
+     * stars, record the item and pin the new copy to its cell. Desk-group items
+     * swap the desk art. Conference-group items swap the room finish.
      */
     fun buyShopItem(itemId: String, itemName: String, cost: Int) {
         viewModelScope.launch {

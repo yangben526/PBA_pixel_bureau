@@ -278,7 +278,8 @@ object OfficeMap {
         add(Prop("foosball", foosball.x, foosball.y))
         add(Prop("trash", trash.x, trash.y))
         add(Prop("plant2", plant2.x, plant2.y))
-        // Conference room: walls/table are drawn by the canvas; chairs + plant reuse sprites.
+        // Conference room: walls/table are drawn by the canvas; chairs reuse sprites.
+        // The corner plant is drawn only for the oakwood room (see OfficeCanvas).
         add(Prop("conf_table", confTable[0].x, confTable[0].y))
         confSeats.forEach { add(Prop("conf_chair", it.x, it.y)) }
         add(Prop("plant", confPlant.x, confPlant.y))

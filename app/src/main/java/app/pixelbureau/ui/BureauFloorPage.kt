@@ -36,6 +36,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -283,6 +284,14 @@ internal fun BureauFloorOverview(
                             else -> "Work desks · Startup Premium / default"
                         },
                         face = KaiPeach,
+                        ink = KaiInk,
+                    )
+                    SoftBadge(
+                        label = when (ui.confStyle) {
+                            CONF_STYLE_OAK -> "Conference · Dream Starter"
+                            else -> "Conference · Premium Startup"
+                        },
+                        face = KaiSky,
                         ink = KaiInk,
                     )
                 }
@@ -673,7 +682,7 @@ private fun FloorAgentCard(
 private fun builtInLabel(kind: String, deskName: String): String = when (kind) {
     "desk" -> "Work desks · $deskName"
     "chair" -> "Desk chairs"
-    "conf_room" -> "Glass conference room"
+    "conf_room" -> "Premium Startup"
     "plant", "plant2" -> "Potted plant"
     "server" -> "Server rack"
     "coffee" -> "Coffee station"
@@ -909,7 +918,8 @@ private data class InvEntry(
 
 private fun builtInCategory(kind: String): ShopCategory =
     ShopCatalog.items.firstOrNull { it.propKey == kind }?.category ?: when (kind) {
-        "desk", "chair", "sofa", "beanbag", "conf_room" -> ShopCategory.Furniture
+        "desk", "chair", "sofa", "beanbag" -> ShopCategory.Furniture
+        "conf_room" -> ShopCategory.Conference
         "plant", "plant2", "plant_top" -> ShopCategory.Plants
         "coffee", "watercooler", "fridge", "vending" -> ShopCategory.Pantry
         "server", "printer", "arcade", "tv" -> ShopCategory.Electronics
@@ -930,20 +940,33 @@ private fun InventoryGrid(
     var detail by remember { mutableStateOf<InvEntry?>(null) }
     detail?.let { e -> InvDetailDialog(e, sprites, onRemove = { onRemove(e.key.removePrefix("o:")); detail = null }, onDismiss = { detail = null }) }
     val deskName = if (ui.deskSprite == DESK_SPRITE_OAK) "Dream Starter" else "Premium desk"
-    val entries = remember(ui.deskSprite, ownedRows) {
-        val built = OfficeMap.builtInInventory().map { (kind, n) ->
+    val confName = if (ui.confStyle == CONF_STYLE_OAK) "Dream Starter - Oakwood simple" else "Premium Startup"
+    val confThumb = if (ui.confStyle == CONF_STYLE_OAK) R.drawable.shop_thumb_oak_conference else R.drawable.shop_thumb_premium_conference
+    val entries = remember(ui.deskSprite, ui.confStyle, ownedRows) {
+        val built = OfficeMap.builtInInventory().mapNotNull { (kind, n) ->
+            // The only map "plant" is the conference corner pot, and Premium Startup does not show it.
+            val count = if (ui.confStyle != CONF_STYLE_OAK && kind == "plant") {
+                n - OfficeMap.props.count { it.kind == "plant" && it.x == OfficeMap.confPlant.x && it.y == OfficeMap.confPlant.y }
+            } else {
+                n
+            }
+            if (count <= 0) return@mapNotNull null
             InvEntry(
                 key = "b:$kind",
-                title = if (kind == "desk") deskName else builtInLabel(kind, deskName),
-                count = n,
+                title = when (kind) {
+                    "desk" -> deskName
+                    "conf_room" -> confName
+                    else -> builtInLabel(kind, deskName)
+                },
+                count = count,
                 builtIn = true,
                 category = builtInCategory(kind),
                 thumbKey = when (kind) {
-                    "conf_room" -> "props/conf_table".takeIf { sprites.get(it) != null } ?: "props/chair"
+                    "conf_room" -> null
                     "desk" -> "props/${ui.deskSprite}"
                     else -> "props/$kind"
                 },
-                thumbRes = null,
+                thumbRes = if (kind == "conf_room") confThumb else null,
             )
         }
         val bought = ownedRows.map { (id, n) ->
@@ -1058,8 +1081,9 @@ private fun InvTile(e: InvEntry, sprites: SpriteStore, modifier: Modifier) {
         ) {
             val bmp = e.thumbKey?.let { sprites.get(it) }
             when {
-                bmp != null -> Image(bmp.asImageBitmap(), e.title, Modifier.size(34.dp), contentScale = ContentScale.Fit, filterQuality = FilterQuality.None)
-                e.thumbRes != null -> Image(painterResource(e.thumbRes), e.title, Modifier.size(34.dp), contentScale = ContentScale.Fit)
+                // Share of the tile, not a fixed dp. ~34dp on a normal phone; larger screens scale up.
+                bmp != null -> Image(bmp.asImageBitmap(), e.title, Modifier.fillMaxSize(0.64f), contentScale = ContentScale.Fit, filterQuality = FilterQuality.None)
+                e.thumbRes != null -> Image(painterResource(e.thumbRes), e.title, Modifier.fillMaxSize(0.64f), contentScale = ContentScale.Fit)
                 else -> Text("📦", fontSize = 14.sp)
             }
             Text(

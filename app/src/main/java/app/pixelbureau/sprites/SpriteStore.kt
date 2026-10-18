@@ -108,7 +108,7 @@ class SpriteStore(private val context: Context) {
         val propLayers: Set<String> = setOf("fridge_open", "server_fan", "desk_oak")
 
         val names: List<String> = buildList {
-            val people = listOf("byte", "cursor", "hugo", "kai", "leif", "luna", "mina", "nico", "nola", "ops", "otto", "pixel", "reid", "sora", "vera", "you")
+            val people = listOf("byte", "cursor", "hugo", "kai", "leif", "luna", "mina", "nico", "nola", "ops", "otto", "pixel", "reid", "sora", "vera", "you", "kenji", "sari", "diego", "june", "pax", "ivo", "ames", "cleo", "ryo", "yuki", "minjun", "wei", "sakura", "jia", "haruto", "soojin", "chen", "hana", "bo", "ren", "lin")
             val frames = listOf(
                 // Desk sit/type use these default sheets + left flip (no *_back).
                 "idle", "sit", "sleep", "type0", "type1",

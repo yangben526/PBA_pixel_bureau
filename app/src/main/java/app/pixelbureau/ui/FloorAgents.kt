@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -168,7 +169,9 @@ private fun AgentTileSmall(agent: Agent, st: AgentState, sprites: SpriteStore, m
         ) {
             val bmp = sprites.get(spriteFrame(agent.spriteKey, "idle", 0))
             if (bmp != null) {
-                Image(bmp.asImageBitmap(), agent.name, Modifier.size(40.dp), contentScale = ContentScale.Fit, filterQuality = FilterQuality.None)
+                // Share of the tile, not a fixed dp, so tablets and large phones
+                // keep the same portrait proportion as a normal phone (~40dp there).
+                Image(bmp.asImageBitmap(), agent.name, Modifier.fillMaxSize(0.58f), contentScale = ContentScale.Fit, filterQuality = FilterQuality.None)
             } else {
                 Text(agent.name.take(1), color = KaiInk, fontWeight = FontWeight.Bold)
             }

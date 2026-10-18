@@ -28,14 +28,17 @@ import app.pixelbureau.sprites.SpriteStore
  * that has no curated listing yet, so a newly registered map prop shows up in the
  * shop automatically. Add it to [ShopCatalog.curated] to give it a real name/price.
  * State/layer sprites ([SpriteStore.propLayers], e.g. fridge_open) and conference
- * built-ins (`conf_*`) are never listed.
+ * built-in pieces (`conf_*`) are never auto-listed. The room itself is sold as
+ * two exclusive styles (glass Premium Startup, oak Dream Starter) that swap
+ * the art of the one room already on the floor.
  *
  * Currency is the HR reputation star (★). Buy spends stars via
  * BureauViewModel.buyShopItem and records item id → count in SettingsStore
- * (KEY_OWNED_ITEMS). Every non-desk purchase gets its own map cell via
- * logic/MapPlacement (stored in SettingsStore KEY_SHOP_PLACEMENTS); buying is
- * refused before any star is spent when the floor has no valid room. The desk
- * group does not add furniture: it swaps the art of the eight work desks.
+ * (KEY_OWNED_ITEMS). Every purchase outside an exclusive group gets its own
+ * map cell via logic/MapPlacement (stored in SettingsStore KEY_SHOP_PLACEMENTS);
+ * buying is refused before any star is spent when the floor has no valid room.
+ * The desk group swaps the art of the eight work desks. The conference group
+ * swaps the glass room for the oakwood room (or back). Neither adds a prop.
  */
 internal enum class ShopStore(val label: String) {
     Pazada("Pazada"),
@@ -46,6 +49,7 @@ internal enum class ShopStore(val label: String) {
 internal enum class ShopCategory(val label: String, @DrawableRes val iconRes: Int) {
     All("All Items", R.drawable.pazada_cat_all),
     Furniture("Furniture", R.drawable.pazada_cat_furniture),
+    Conference("Conference", R.drawable.pazada_cat_conference),
     Plants("Plants", R.drawable.pazada_cat_plants),
     Electronics("Electronics", R.drawable.pazada_cat_electronics),
     Pantry("Pantry", R.drawable.pazada_cat_pantry),
@@ -102,6 +106,9 @@ internal object ShopCatalog {
     /** Exclusivity group: only one desk type owned at a time (office_desk ⇄ premium_desk). */
     const val GROUP_DESK = "desk"
 
+    /** Exclusivity group: only one conference-room style at a time. */
+    const val GROUP_CONF = "conference"
+
     /** Hand-written listings. One entry per propKey; edit `store` here to move it. */
     val curated: List<ShopItem> = listOf(
         // ── Featured ──────────────────────────────────────────────────────
@@ -111,6 +118,9 @@ internal object ShopCatalog {
         ShopItem("coffee_machine", "Coffee Station", "Great ideas start here.", 3, ShopCategory.Pantry, propKey = "coffee", featured = true),
         ShopItem("aquarium", "Office Aquarium", "Three fish, zero meetings.", 4, ShopCategory.Decor, propKey = "aquarium", featured = true),
         ShopItem("floor_lamp", "Brass Floor Lamp", "Warm light for late sprints.", 2, ShopCategory.Decor, propKey = "floor_lamp", featured = true),
+        // Conference styles swap the built-in room. propKeys are not map pieces.
+        ShopItem("oak_conference", "Dream Starter - Oakwood simple", "Plain oak boards, a bare table, and wooden stools.", 4, ShopCategory.Conference, propKey = "meeting_oak", featured = true, thumbRes = R.drawable.shop_thumb_oak_conference, exclusiveGroup = GROUP_CONF),
+        ShopItem("premium_conference", "Premium Startup", "Glass walls, a black table, and a conference hub.", 8, ShopCategory.Conference, propKey = "meeting_glass", featured = true, thumbRes = R.drawable.shop_thumb_premium_conference, exclusiveGroup = GROUP_CONF),
         // ── Special deals ─────────────────────────────────────────────────
         ShopItem("premium_desk", "Startup Premium", "A full workstation, ready to go.", 5, ShopCategory.Furniture, propKey = "desk", discountPercent = 40, exclusiveGroup = GROUP_DESK),
         ShopItem("bookshelf", "Bookshelf", "Room for every manual.", 3, ShopCategory.Storage, propKey = "bookshelf", discountPercent = 33),
@@ -142,8 +152,8 @@ internal object ShopCatalog {
 
     /**
      * Every prop the map can place: sprite registry ∪ props actually placed.
-     * Conference-room built-ins (`conf_*`) stay on the floor but are never sold —
-     * they have no shop sprite and would block cells invisibly if purchased.
+     * Conference-room pieces (`conf_*`) stay on the floor and are never sold as
+     * props. The room style is the curated exclusive pair above.
      */
     /** Props pulled from sale (cactus, pouf); never listed or auto-listed. */
     val retiredPropKeys: Set<String> = setOf("cactus", "pouf")

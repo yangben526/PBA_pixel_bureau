@@ -1,4 +1,7 @@
 .gradle/
+.gradle-home/
+__pycache__/
+*.pyc
 build/
 local.properties
 *.iml

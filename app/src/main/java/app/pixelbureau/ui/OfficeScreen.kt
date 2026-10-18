@@ -1470,6 +1470,7 @@ private fun OfficeViewport(model: BureauViewModel, modifier: Modifier) {
         modifier = modifier,
         placed = ui.placedProps,
         deskSprite = ui.deskSprite,
+        confStyle = ui.confStyle,
         onTapRoom = {
             val open = ui.taskforces.firstOrNull { app.pixelbureau.logic.TaskforceStatus.isOpen(it.data.status) }
             if (open != null) meetingInfoId = open.data.id else model.openMeetingDialog()

@@ -1,6 +1,11 @@
 package app.pixelbureau.Pixel_Bureau_Web.pixelhire
 
 import android.graphics.BitmapFactory
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -40,20 +45,25 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlin.math.roundToInt
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import app.pixelbureau.R
 import app.pixelbureau.Pixel_Bureau_Web.shared.SoftGameButton
@@ -61,12 +71,13 @@ import app.pixelbureau.Pixel_Bureau_Web.shared.WebSearchField
 import app.pixelbureau.ui.*
 import app.pixelbureau.logic.HireCandidate
 import app.pixelbureau.logic.HireRoleAll
+import app.pixelbureau.logic.HireRoleGeneral
+import app.pixelbureau.logic.agentHireTitleScale
+import app.pixelbureau.logic.candidatesForRole
 import app.pixelbureau.logic.hireRoleFilters
 import app.pixelbureau.logic.OfficeMap
 import app.pixelbureau.logic.hiredLook
 import app.pixelbureau.logic.matches
-import app.pixelbureau.logic.openingCandidatePool
-import app.pixelbureau.logic.rollCandidatePool
 import app.pixelbureau.logic.workplace
 import kotlin.random.Random
 
@@ -80,7 +91,6 @@ private val StepBlue = Color(0xFF4C9ED9)
 private val StepOrange = Color(0xFFE0923A)
 private val PoolBlue = Color(0xFF3A7CA5)
 private val TagFace = Color(0xFFF3E6D0)
-private val FullTimeFace = Color(0xFFDFF3E0)
 private val FullTimeInk = Color(0xFF3E7A45)
 private val StarEmpty = Color(0xFFE4D3B0)
 
@@ -109,6 +119,18 @@ private val hirePortraitRes = mapOf(
     "kenji" to R.drawable.hire_portrait_kenji,
     "sari" to R.drawable.hire_portrait_sari,
     "diego" to R.drawable.hire_portrait_diego,
+    "yuki" to R.drawable.hire_portrait_yuki,
+    "minjun" to R.drawable.hire_portrait_minjun,
+    "wei" to R.drawable.hire_portrait_wei,
+    "sakura" to R.drawable.hire_portrait_sakura,
+    "jia" to R.drawable.hire_portrait_jia,
+    "haruto" to R.drawable.hire_portrait_haruto,
+    "soojin" to R.drawable.hire_portrait_soojin,
+    "chen" to R.drawable.hire_portrait_chen,
+    "hana" to R.drawable.hire_portrait_hana,
+    "bo" to R.drawable.hire_portrait_bo,
+    "ren" to R.drawable.hire_portrait_ren,
+    "lin" to R.drawable.hire_portrait_lin,
 )
 
 private val roleIconRes = mapOf(
@@ -139,9 +161,21 @@ internal fun PixelHirePage(
 
     var query by remember { mutableStateOf("") }
     var role by remember { mutableStateOf("Finance") }
-    var pool by remember { mutableStateOf(openingCandidatePool()) }
     var hired by remember { mutableStateOf(setOf<String>()) }
-    val shown = pool.filter { it.matches(query, role) }
+    var deck by remember { mutableStateOf(0) }
+    var reading by remember { mutableStateOf<String?>(null) }
+    val waiting = candidatesForRole(role).filter { it.name !in hired && it.matches(query, role) }
+    val sections = if (role == HireRoleAll) {
+        val order = listOf(HireRoleGeneral) + hireRoleFilters.filter { it != HireRoleAll }
+        order.mapNotNull { label ->
+            val people = waiting.filter { it.role.equals(label, ignoreCase = true) }
+            val dealt = if (deck == 0) people else people.shuffled(Random(deck * 31 + label.hashCode()))
+            if (dealt.isEmpty()) null else label to dealt
+        }
+    } else {
+        val dealt = if (deck == 0) waiting else waiting.shuffled(Random(deck))
+        if (dealt.isEmpty()) emptyList() else listOf(role to dealt)
+    }
 
     Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(
@@ -167,16 +201,7 @@ internal fun PixelHirePage(
         val banner = remember(context) {
             BitmapFactory.decodeResource(context.resources, R.drawable.agent_hire_banner).asImageBitmap()
         }
-        val bannerRatio = banner.width / banner.height.toFloat()
-        Image(
-            bitmap = banner,
-            contentDescription = "Agent Hire. Find Amazing Agents. Grow Your Bureau.",
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(bannerRatio),
-            contentScale = ContentScale.Fit,
-            filterQuality = FilterQuality.None,
-        )
+        AgentHireBanner(bitmap = banner)
 
         WebSearchField(query, "Search for skills, roles, or keywords...") { query = it }
 
@@ -185,7 +210,11 @@ internal fun PixelHirePage(
                 BitmapFactory.decodeResource(context.resources, resId).asImageBitmap()
             }
         }
-        RoleChipRow(roleIcons = roleIcons, selected = role, onSelect = { role = it })
+        RoleChipRow(roleIcons = roleIcons, selected = role, onSelect = { picked ->
+            role = picked
+            deck = 0
+            reading = null
+        })
 
         Row(
             Modifier.fillMaxWidth(),
@@ -224,11 +253,15 @@ internal fun PixelHirePage(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
+                val deskScene = remember(context) {
+                    BitmapFactory.decodeResource(context.resources, R.drawable.hire_desk_scene).asImageBitmap()
+                }
                 Image(
-                    painterResource(R.drawable.hire_desk_scene),
-                    contentDescription = null,
+                    bitmap = deskScene,
+                    contentDescription = "A desk ready to open",
                     modifier = Modifier.width(112.dp).height(56.dp),
                     contentScale = ContentScale.Fit,
+                    filterQuality = FilterQuality.None,
                 )
                 Spacer(Modifier.weight(1f))
                 SoftGameButton(
@@ -260,7 +293,10 @@ internal fun PixelHirePage(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
                             role = Role.Button,
-                            onClick = { pool = rollCandidatePool(Random, avoid = hired, role = role) },
+                            onClick = {
+                                deck += 1
+                                reading = null
+                            },
                         )
                         .padding(horizontal = 4.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -268,7 +304,7 @@ internal fun PixelHirePage(
                 ) {
                     Text("↻", color = PoolBlue, fontWeight = FontWeight.Bold, fontSize = 14.sp)
                     Text(
-                        "Refresh",
+                        "Shuffle",
                         color = PoolBlue,
                         fontWeight = FontWeight.SemiBold,
                         style = MaterialTheme.typography.labelLarge,
@@ -284,33 +320,156 @@ internal fun PixelHirePage(
                     lineHeight = 16.sp,
                 )
             }
-            if (shown.isEmpty()) {
+            if (waiting.isEmpty()) {
                 Text(
-                    "No one matches. Try another role, or refresh the pool.",
+                    if (query.isBlank()) {
+                        "Everyone in this list is already on the team."
+                    } else {
+                        "No one matches. Try another word, or another role."
+                    },
                     color = KaiInkMuted,
                     style = MaterialTheme.typography.bodySmall,
                 )
-            }
-            for (candidate in shown) {
-                CandidateCard(
-                    candidate = candidate,
-                    portrait = portraits[candidate.portraitKey],
-                    canHire = canHire,
-                    onHire = {
-                        model.hire(
-                            candidate.name,
-                            candidate.instructions,
-                            candidate.outputPersonality,
-                            candidate.hiredLook(),
-                        )
-                        val taken = hired + candidate.name
-                        hired = taken
-                        val next = pool.filter { it.name != candidate.name }
-                        pool = if (next.isEmpty()) rollCandidatePool(Random, avoid = taken) else next
-                    },
+            } else {
+                Text(
+                    "${waiting.size} waiting. Tap a card to read how they work, then hire.",
+                    color = KaiInkMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                    lineHeight = 16.sp,
                 )
             }
+            for ((label, people) in sections) {
+                if (role == HireRoleAll) {
+                    RoleShelf(label, people.size)
+                }
+                for (candidate in people) {
+                    CandidateCard(
+                        candidate = candidate,
+                        portrait = portraits[candidate.portraitKey],
+                        canHire = canHire,
+                        expanded = reading == candidate.name,
+                        onToggle = {
+                            reading = if (reading == candidate.name) null else candidate.name
+                        },
+                        onHire = {
+                            model.hire(
+                                candidate.name,
+                                candidate.instructions,
+                                candidate.outputPersonality,
+                                candidate.hiredLook(),
+                            )
+                            hired = hired + candidate.name
+                            if (reading == candidate.name) reading = null
+                        },
+                    )
+                }
+            }
         }
+    }
+}
+
+private const val BannerTwoPi = 6.2831855f
+
+private data class BannerSlice(val image: ImageBitmap, val left: Int, val top: Int) {
+    val width: Int get() = image.width
+    val height: Int get() = image.height
+}
+
+/**
+ * Crops [src] to the given rect (bitmap pixels) and fades alpha toward every
+ * edge so the slice can drift over the base art without hard seams.
+ */
+private fun featheredSlice(
+    src: android.graphics.Bitmap,
+    left: Int,
+    top: Int,
+    right: Int,
+    bottom: Int,
+    featherPx: Float,
+): ImageBitmap {
+    val w = (right - left).coerceAtLeast(1)
+    val h = (bottom - top).coerceAtLeast(1)
+    val out = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
+    val canvas = android.graphics.Canvas(out)
+    canvas.drawBitmap(
+        src,
+        android.graphics.Rect(left, top, right, bottom),
+        android.graphics.Rect(0, 0, w, h),
+        null,
+    )
+    val mask = android.graphics.Paint().apply {
+        isAntiAlias = true
+        xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_IN)
+    }
+    val clear = 0x00000000
+    val solid = 0xFF000000.toInt()
+    val fx = (featherPx / w).coerceIn(0f, 0.49f)
+    mask.shader = android.graphics.LinearGradient(
+        0f, 0f, w.toFloat(), 0f,
+        intArrayOf(clear, solid, solid, clear),
+        floatArrayOf(0f, fx, 1f - fx, 1f),
+        android.graphics.Shader.TileMode.CLAMP,
+    )
+    canvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), mask)
+    val fy = (featherPx / h).coerceIn(0f, 0.49f)
+    mask.shader = android.graphics.LinearGradient(
+        0f, 0f, 0f, h.toFloat(),
+        intArrayOf(clear, solid, solid, clear),
+        floatArrayOf(0f, fy, 1f - fy, 1f),
+        android.graphics.Shader.TileMode.CLAMP,
+    )
+    canvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), mask)
+    return out.asImageBitmap()
+}
+
+/**
+ * AgentHire banner with a looped "Hire" animation over the otherwise static
+ * original art: same pixels, no recolor, redraw, border, or layout change.
+ *
+ * The slice rect is bitmap pixels of R.drawable.agent_hire_banner (2000x667),
+ * split from "Agent" through clean sky. The word scales anchored at the
+ * slice's bottom-center so the bottom rows stay fixed.
+ */
+@Composable
+private fun AgentHireBanner(bitmap: ImageBitmap) {
+    val bannerRatio = bitmap.width / bitmap.height.toFloat()
+    val hire = remember(bitmap) {
+        val src = bitmap.asAndroidBitmap()
+        BannerSlice(featheredSlice(src, 706, 128, 1118, 328, 8f), 706, 128)
+    }
+    val loop = rememberInfiniteTransition(label = "agentHireBanner")
+    val hirePhase by loop.animateFloat(
+        initialValue = 0f,
+        targetValue = BannerTwoPi,
+        animationSpec = infiniteRepeatable(animation = tween(3400, easing = LinearEasing)),
+        label = "agentHireWord",
+    )
+    Canvas(
+        Modifier
+            .fillMaxWidth()
+            .aspectRatio(bannerRatio)
+            .semantics { contentDescription = "Agent Hire. Find Amazing Agents. Grow Your Bureau." },
+    ) {
+        val scale = size.width / bitmap.width.toFloat()
+        drawImage(
+            bitmap,
+            dstOffset = IntOffset.Zero,
+            dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()),
+            filterQuality = FilterQuality.None,
+        )
+        // "Hire": gentle breathe anchored at the slice bottom-center, so the
+        // bottom rows stay fixed while the letters swell upward.
+        val breathe = agentHireTitleScale(hirePhase)
+        val hireW = (hire.width * breathe * scale).roundToInt().coerceAtLeast(1)
+        val hireH = (hire.height * breathe * scale).roundToInt().coerceAtLeast(1)
+        val hireCx = (hire.left + hire.width / 2f) * scale
+        val hireBottom = (hire.top + hire.height) * scale
+        drawImage(
+            hire.image,
+            dstOffset = IntOffset((hireCx - hireW / 2f).roundToInt(), (hireBottom - hireH).roundToInt()),
+            dstSize = IntSize(hireW, hireH),
+            filterQuality = FilterQuality.None,
+        )
     }
 }
 
@@ -496,12 +655,54 @@ private fun HirePanel(
     }
 }
 
+@Composable
+private fun RoleShelf(label: String, count: Int) {
+    Row(
+        Modifier.fillMaxWidth().padding(top = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Box(
+            Modifier
+                .width(3.dp)
+                .height(14.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(roleInk(label)),
+        )
+        Text(label, color = KaiInk, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+        Spacer(Modifier.weight(1f))
+        Text("$count", color = KaiInkMuted, fontSize = 12.sp)
+    }
+}
+
+private fun roleInk(role: String): Color = when (role) {
+    "Design" -> Color(0xFFC45B8A)
+    "Engineering" -> PoolBlue
+    "Marketing" -> StepOrange
+    "Operations" -> FullTimeInk
+    "Finance" -> StepBlue
+    else -> Color(0xFF8A7348)
+}
+
+/** The useful sentence, skipping a short "You are…" introduction when there is one. */
+private fun workLine(text: String): String {
+    val parts = text.trim().split(Regex("(?<=[.!?])\\s+")).filter { it.isNotBlank() }
+    val line = when {
+        parts.size >= 3 && parts[0].length < 90 && parts[1].length < 48 -> parts[1] + " " + parts[2]
+        parts.size >= 2 && parts[0].length < 90 -> parts[1]
+        else -> parts.firstOrNull().orEmpty()
+    }
+    return line.take(180)
+}
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun CandidateCard(
     candidate: HireCandidate,
     portrait: android.graphics.Bitmap?,
     canHire: Boolean,
+    expanded: Boolean,
+    onToggle: () -> Unit,
     onHire: () -> Unit,
 ) {
     Row(
@@ -509,7 +710,13 @@ private fun CandidateCard(
             .fillMaxWidth()
             .clip(HireTile)
             .background(Color.White)
-            .border(1.5.dp, KaiBorder, HireTile)
+            .border(1.5.dp, if (expanded) roleInk(candidate.role) else KaiBorder, HireTile)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                role = Role.Button,
+                onClick = onToggle,
+            )
             .padding(10.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -541,58 +748,54 @@ private fun CandidateCard(
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(candidate.name, color = KaiInk, fontWeight = FontWeight.Bold, fontSize = 16.sp)
             Text(
-                candidate.title,
+                "${candidate.title} · ${candidate.workplace()}",
                 color = KaiInkMuted,
                 style = MaterialTheme.typography.bodySmall,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                for (skill in candidate.skills) {
-                    Text(
-                        skill,
-                        color = KaiInkMuted,
-                        fontSize = 10.sp,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(50))
-                            .background(TagFace)
-                            .padding(horizontal = 8.dp, vertical = 3.dp),
-                    )
+            if (expanded) {
+                FlowRow(
+                    Modifier.padding(top = 4.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    for (skill in candidate.skills) {
+                        Text(
+                            skill,
+                            color = KaiInkMuted,
+                            fontSize = 10.sp,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(50))
+                                .background(TagFace)
+                                .padding(horizontal = 8.dp, vertical = 3.dp),
+                        )
+                    }
                 }
+                Text(
+                    workLine(candidate.instructions),
+                    color = KaiInk,
+                    style = MaterialTheme.typography.bodySmall,
+                    lineHeight = 16.sp,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+                Text(
+                    "Voice · ${workLine(candidate.outputPersonality)}",
+                    color = KaiInkMuted,
+                    style = MaterialTheme.typography.bodySmall,
+                    lineHeight = 16.sp,
+                )
             }
         }
         Column(
             horizontalAlignment = Alignment.End,
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Text(
-                "Full-time",
-                color = FullTimeInk,
-                fontSize = 11.sp,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background(FullTimeFace)
-                    .padding(horizontal = 8.dp, vertical = 3.dp),
-            )
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(3.dp),
-            ) {
-                HirePin(Modifier.size(10.dp), KaiInkMuted)
-                Text(
-                    candidate.workplace(),
-                    color = KaiInkMuted,
-                    fontSize = 11.sp,
-                )
-            }
             StarRow(candidate.stars)
             SoftGameButton(
-                label = if (canHire) "Hire" else "Need a desk",
+                label = if (canHire) "Hire" else "No desk",
                 enabled = canHire,
+                compact = true,
                 face = KaiAccent,
                 highlight = KaiAccentHi,
                 shadow = KaiAccentLo,
@@ -618,20 +821,4 @@ private fun StarRow(filled: Int) {
     }
 }
 
-@Composable
-private fun HirePin(modifier: Modifier, color: Color) {
-    Canvas(modifier) {
-        val r = size.minDimension * 0.28f
-        val c = Offset(size.width * 0.5f, size.height * 0.34f)
-        drawCircle(color, radius = r, center = c)
-        drawCircle(Color.White, radius = r * 0.38f, center = c)
-        drawLine(
-            color,
-            Offset(c.x, c.y + r * 0.2f),
-            Offset(c.x, size.height * 0.92f),
-            strokeWidth = size.minDimension * 0.16f,
-            cap = StrokeCap.Round,
-        )
-    }
-}
 

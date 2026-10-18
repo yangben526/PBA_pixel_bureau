@@ -207,6 +207,8 @@ fun OfficeCanvas(
     placed: List<PlacedProp> = emptyList(),
     /** Work-desk art: "desk" (default) or "desk_oak" (owned Oakwood desk). */
     deskSprite: String = "desk",
+    /** Conference finish: [CONF_STYLE_PREMIUM] glass, or [CONF_STYLE_OAK] boards. */
+    confStyle: String = CONF_STYLE_PREMIUM,
     /** Tap on the glass conference room (floor or walls) when no agent was hit. */
     onTapRoom: (() -> Unit)? = null,
     /** Pulse a glow outline around the conference room (meeting dialog open / live taskforce). */
@@ -337,13 +339,15 @@ fun OfficeCanvas(
                 }
             }
         }
-        // Conference room carpet: a cool tint over the floor tiles inside the glass.
+        val oakRoom = confStyle == CONF_STYLE_OAK
+        // Premium: cool carpet under the glass. Oakwood: scuffed board floor.
         for (cell in OfficeMap.confCells) {
+            val worn = oakRoom && ((cell.x + cell.y) % 5 == 0 || cell == OfficeMap.confPlant)
             diamond(
                 camera.toScreen(cell.x.toFloat(), cell.y.toFloat()),
                 camera.tileW * camera.scale,
                 camera.tileH * camera.scale,
-                ConfCarpet,
+                if (!oakRoom) ConfCarpet else if (worn) OakFloorWear else OakFloor,
             )
         }
         val litScreens = desksWithActiveScreens(snapshot.actors)
@@ -356,13 +360,13 @@ fun OfficeCanvas(
             snapshot.actors.forEach { add(Piece.Person(it)) }
         }.sortedBy { it.depth }
         // Room highlight sits in the floor/wall layer: under every agent and bubble.
-        if (roomHighlight) drawConfHighlight(camera, System.currentTimeMillis())
+        if (roomHighlight) drawConfHighlight(camera, System.currentTimeMillis(), oakRoom)
         for (piece in pieces) {
             when (piece) {
-                is Piece.Furniture -> drawFurniture(piece.prop, sprites, camera, litScreens, snapshot.fridgeOpen, deskSprite)
+                is Piece.Furniture -> drawFurniture(piece.prop, sprites, camera, litScreens, snapshot.fridgeOpen, deskSprite, oakRoom)
                 is Piece.Placed -> drawPlaced(piece.item, sprites, camera)
-                is Piece.Wall -> drawConfWall(piece.seg, camera, tvState)
-                is Piece.Door -> drawConfDoor(piece.open, camera)
+                is Piece.Wall -> drawConfWall(piece.seg, camera, tvState, oakRoom)
+                is Piece.Door -> if (oakRoom) drawOakDoor(piece.open, camera) else drawConfDoor(piece.open, camera)
                 is Piece.BackDoor -> drawBackDoor(piece.open, camera)
                 is Piece.Person -> drawActor(
                     piece.actor,
@@ -399,10 +403,7 @@ private sealed class Piece {
             // Centre of the 2×2 table: north-row sitters draw first, south/east after.
             OfficeMap.confTable.map { (it.x + it.y).toFloat() }.average().toFloat()
         } else if (prop.kind == "conf_chair") {
-            // North row: backrest away from the camera, so the sitter draws over it.
-            // South / east: backrest toward the camera, drawn over the sitter.
-            if (prop.y == OfficeMap.confY0) (prop.x + prop.y).toFloat() - 0.01f
-            else (prop.x + prop.y).toFloat() + 0.05f
+            confChairSortDepth(prop.x, prop.y)
         } else if (prop.kind == "chair") {
             // Above a tucked desk-sitter at the same tile so the rear backrest
             // stays toward the camera (agent peeks toward the laptop past it).
@@ -440,17 +441,34 @@ private sealed class Piece {
         // Desk sit/type with seat tuck sort under the chair (-0.04 < chair's -0.01)
         // so the rear 3/4 backrest reads toward the camera while the agent faces
         // the laptop. Sleepers stay above the loveseat. Walk/idle stay above chairs.
+        // On the ground at a conference seat, in front of that chair. Seated, the chair draws over them.
         override val depth: Float
-            get() {
-                val bias = when (actor.anim) {
-                    "sleep" -> 0.12f
-                    "sit", "type" -> if (actor.useSeatTuck) -0.04f else 0.02f
-                    else -> 0.01f
-                }
-                return actor.x + actor.y + bias
-            }
+            get() = actorSortDepth(actor.x, actor.y, actor.anim, actor.useSeatTuck)
     }
 }
+
+/**
+ * Painter's order for one actor. Higher draws later, in front.
+ * A person standing or walking on a conference seat sorts just in front of
+ * that chair ([confChairSortDepth] is tile + 0.05 on the camera-facing seats).
+ * Sit and type stay behind it, so the backrest covers the body. The standing
+ * bump stays under the front glass (those walls sort at tile + 0.5).
+ */
+internal fun actorSortDepth(x: Float, y: Float, anim: String, useSeatTuck: Boolean): Float {
+    val confSeat = OfficeMap.confSeatAt(x, y)
+    val seated = anim == "sit" || anim == "type"
+    if (confSeat != null && !seated) return confSeat.x + confSeat.y + 0.12f
+    val bias = when (anim) {
+        "sleep" -> 0.12f
+        "sit", "type" -> if (useSeatTuck) -0.04f else 0.02f
+        else -> 0.01f
+    }
+    return x + y + bias
+}
+
+/** Conference chair painter's order. North row sits behind its sitter; the others are the camera-facing seats. */
+internal fun confChairSortDepth(x: Int, y: Int): Float =
+    if (y == OfficeMap.confY0) (x + y) - 0.01f else (x + y) + 0.05f
 
 private fun DrawScope.drawActor(
     actor: ActorSnap,
@@ -625,6 +643,7 @@ private fun DrawScope.drawFurniture(
     litScreens: Map<Int, Int>,
     fridgeOpen: Boolean = false,
     deskSprite: String = "desk",
+    oakRoom: Boolean = false,
 ) {
     if (prop.kind == "desk") {
         // Owned desk type swaps the art of every work desk (exclusive group "desk").
@@ -641,18 +660,22 @@ private fun DrawScope.drawFurniture(
         return
     }
     if (prop.kind == "conf_table") {
-        drawConfTable(sprites, camera)
+        drawConfTable(camera, oakRoom)
         return
     }
     if (prop.kind == "conf_chair") {
-        val chair = sprites.get("props/chair") ?: return
-        // Nudge the chair a little toward the table so it tucks in.
         val toward = 0.22f
         val (cx, cy) = when {
             prop.y == OfficeMap.confY0 -> prop.x.toFloat() to prop.y + toward
             prop.y == OfficeMap.confY0 + 3 -> prop.x.toFloat() to prop.y - toward
             else -> prop.x - toward to prop.y.toFloat()
         }
+        if (oakRoom) {
+            drawOakChair(camera, cx, cy, backEast = prop.x == OfficeMap.confX0 + 3)
+            return
+        }
+        val chair = sprites.get("props/chair") ?: return
+        // Nudge the chair a little toward the table so it tucks in.
         val box = spriteBox(chair, cx, cy, propScale("chair"), camera)
         // Chair art faces -x; mirror for the north / south rows that face along y.
         if (prop.x == OfficeMap.confX0 + 3) {
@@ -670,6 +693,10 @@ private fun DrawScope.drawFurniture(
         val box = spriteBox(station, prop.x.toFloat(), prop.y.toFloat(), propScale("coffee"), camera)
         drawSprite(station.asImageBitmap(), box.center, box.w, box.h)
         drawCoffeeSteam(box, System.currentTimeMillis())
+        return
+    }
+    // Premium Startup has no plant. The corner pot belongs to the oakwood room.
+    if (!oakRoom && prop.kind == "plant" && prop.x == OfficeMap.confPlant.x && prop.y == OfficeMap.confPlant.y) {
         return
     }
     val fridgeOpenBmp = if (prop.kind == "fridge" && fridgeOpen) sprites.get("props/fridge_open") else null
@@ -1064,11 +1091,30 @@ private val ConfGlass = Color(0x3D9ED4EC)
 private val ConfGlassShine = Color(0x55E8F8FF)
 private val ConfPanel = Color(0xFFD8C2A2)
 private val ConfPanelDark = Color(0xFFBFA684)
-private val ConfWoodTop = Color(0xFFC98E52)
-private val ConfWoodEdge = Color(0xFF8C5A2E)
-private val ConfWoodSide = Color(0xFF6E4422)
+private val ConfBlackTop = Color(0xFF17191F)
+private val ConfBlackEdge = Color(0xFF3C4350)
+private val ConfBlackSide = Color(0xFF0C0E12)
+private val ConfSheen = Color(0x668E98A8)
+private val ConfHubBody = Color(0xFF101216)
+private val ConfHubFace = Color(0xFF2A2F38)
+private val ConfHubRim = Color(0xFFB7C0CE)
+private val ConfHubLed = Color(0xFF3DDCFF)
 private val ConfTv = Color(0xFF15181D)
 private val ConfTvGlass = Color(0xFF26303A)
+
+/** Dream Starter oakwood: unfinished boards, no glass, short front walls. */
+private val OakPlank = Color(0xFFD7B07A)
+private val OakPlankDark = Color(0xFFC49558)
+private val OakSeam = Color(0xFFA8743E)
+private val OakPost = Color(0xFF6E4524)
+private val OakKnot = Color(0xFF8C5A2C)
+private val OakFloor = Color(0x66C9A066)
+private val OakFloorWear = Color(0x55906A3A)
+private val OakTableTop = Color(0xFFE0C08A)
+private val OakTableEdge = Color(0xFFB8884E)
+private val OakTableSide = Color(0xFF9A6A38)
+private const val OakBackH = 1.15f
+private const val OakFrontH = 0.46f
 
 /** Wall height in tileH units (screen). */
 private const val ConfWallH = 1.7f
@@ -1164,7 +1210,11 @@ private fun tvBezel(camera: OfficeCamera): Path {
     return quad(at(0.12f, 1.42f), at(1.18f, 1.42f), at(1.18f, 0.84f), at(0.12f, 0.84f))
 }
 
-private fun DrawScope.drawConfWall(seg: ConfWallSeg, camera: OfficeCamera, tv: TvState? = null) {
+private fun DrawScope.drawConfWall(seg: ConfWallSeg, camera: OfficeCamera, tv: TvState? = null, oak: Boolean = false) {
+    if (oak) {
+        drawOakWall(seg, camera, tv)
+        return
+    }
     // The panel right of the TV draws later (higher depth); cut the TV out of it so
     // its post/glass/shine never crosses the monitor.
     val tvNeighbour = seg.back && seg.ay == OfficeMap.confY0 - 0.5f && seg.ax == OfficeMap.confX0 + 1.5f
@@ -1226,6 +1276,141 @@ private fun DrawScope.drawConfDoor(open: Float, camera: OfficeCamera) {
     // Door frame header across the opening (always there).
     drawLine(ConfFrame, camera.wallPt(hx, hy, ConfWallH), camera.wallPt(hx, hy + 1f, ConfWallH), stroke * 1.6f)
     drawLine(ConfFrame, camera.wallPt(hx, hy + 1f, 0f), camera.wallPt(hx, hy + 1f, ConfWallH), stroke * 1.4f)
+}
+
+/**
+ * Dream Starter walls: solid oak planks, no glass. Back walls are shorter than
+ * the premium glass; front walls are pony-height so the table stays visible.
+ */
+private fun DrawScope.drawOakWall(seg: ConfWallSeg, camera: OfficeCamera, tv: TvState?) {
+    val h = if (seg.back) OakBackH else OakFrontH
+    val stroke = (camera.tileW * camera.scale * 0.035f).coerceAtLeast(1.5f)
+    val a0 = camera.wallPt(seg.ax, seg.ay, 0f)
+    val b0 = camera.wallPt(seg.bx, seg.by, 0f)
+    val a1 = camera.wallPt(seg.ax, seg.ay, h)
+    val b1 = camera.wallPt(seg.bx, seg.by, h)
+    val mismatched = ((seg.ax + seg.ay) * 2f).toInt() % 3 == 0
+    drawPath(quad(a0, b0, b1, a1), if (mismatched) OakPlankDark else OakPlank)
+    for (k in 1..3) {
+        val hh = h * k / 4f
+        drawLine(OakSeam, camera.wallPt(seg.ax, seg.ay, hh), camera.wallPt(seg.bx, seg.by, hh), stroke * 0.45f)
+    }
+    if (seg.back) {
+        val knot = camera.wallPt(
+            seg.ax + (seg.bx - seg.ax) * 0.62f,
+            seg.ay + (seg.by - seg.ay) * 0.62f,
+            h * 0.36f,
+        )
+        drawCircle(OakKnot, stroke * 1.15f, knot)
+    }
+    drawLine(OakPost, a0, b0, stroke * 1.5f)
+    drawLine(OakPost, a1, b1, stroke * 2.2f)
+    drawLine(OakPost, a0, a1, stroke * 2.0f)
+    drawLine(OakPost, b0, b1, stroke * 2.0f)
+    val strokeThin = (camera.tileW * camera.scale * 0.03f).coerceAtLeast(1.2f)
+    fun at(t: Float, lift: Float) = camera.wallPt(
+        seg.ax + (seg.bx - seg.ax) * t,
+        seg.ay + (seg.by - seg.ay) * t,
+        lift,
+    )
+    when (seg.decor) {
+        "tv" -> {
+            // Small wood-cased set, sat low. Screen still runs the meeting slides.
+            val tl = at(0.22f, 0.98f); val tr = at(0.82f, 0.98f)
+            val br = at(0.82f, 0.52f); val bl = at(0.22f, 0.52f)
+            drawPath(quad(at(0.16f, 1.04f), at(0.88f, 1.04f), at(0.88f, 0.46f), at(0.16f, 0.46f)), OakPost)
+            drawPath(quad(tl, tr, br, bl), ConfTv)
+            val i = 0.05f
+            val gtl = at(0.22f + i, 0.98f - i); val gtr = at(0.82f - i, 0.98f - i)
+            val gbl = at(0.22f + i, 0.52f + i)
+            drawPath(quad(gtl, gtr, at(0.82f - i, 0.52f + i), gbl), if (tv == null) Color(0xFF2A241C) else Color(0xFF3A3428))
+            if (tv != null) drawTvSlides(tv, gtl, gtr, gbl)
+            drawCircle(if (tv != null) Color(0xFF5CF08A) else Color(0xFFB0392B), strokeThin * 0.55f, at(0.74f, 0.56f))
+        }
+        "chart" -> {
+            // Crooked scrap taped to the board, instead of the framed poster.
+            val sheet = quad(at(0.22f, 0.92f), at(0.78f, 0.86f), at(0.84f, 0.48f), at(0.16f, 0.52f))
+            drawPath(sheet, Color(0xFFF3E4C0))
+            drawLine(Color(0xFFD8C48A), at(0.30f, 0.90f), at(0.46f, 0.88f), strokeThin * 1.6f)
+            drawLine(Color(0xFFD8C48A), at(0.58f, 0.84f), at(0.72f, 0.82f), strokeThin * 1.4f)
+            drawLine(OakPost, at(0.26f, 0.78f), at(0.70f, 0.74f), strokeThin * 0.4f)
+            drawLine(OakPost, at(0.26f, 0.66f), at(0.62f, 0.62f), strokeThin * 0.4f)
+            drawLine(OakPost, at(0.26f, 0.56f), at(0.50f, 0.54f), strokeThin * 0.35f)
+        }
+    }
+}
+
+/** Solid oak slab. Same hinge and swing as the glass door, shorter and plain. */
+private fun DrawScope.drawOakDoor(open: Float, camera: OfficeCamera) {
+    val inside = OfficeMap.confDoorInside
+    val hx = inside.x - 0.5f
+    val hy = inside.y - 0.5f
+    val theta = (open.coerceIn(0f, 1f) * 90f) * (Math.PI.toFloat() / 180f)
+    val fx = hx + kotlin.math.sin(theta) * 0.92f
+    val fy = hy + kotlin.math.cos(theta) * 0.92f
+    val doorH = 1.02f
+    val stroke = (camera.tileW * camera.scale * 0.035f).coerceAtLeast(1.5f)
+    val a0 = camera.wallPt(hx, hy, 0f)
+    val b0 = camera.wallPt(fx, fy, 0f)
+    val a1 = camera.wallPt(hx, hy, doorH)
+    val b1 = camera.wallPt(fx, fy, doorH)
+    drawPath(quad(a0, b0, b1, a1), OakPlank)
+    val aM = camera.wallPt(hx, hy, doorH * 0.30f)
+    val bM = camera.wallPt(fx, fy, doorH * 0.30f)
+    drawPath(quad(a0, b0, bM, aM), OakPlankDark)
+    for (k in 1..3) {
+        val t = k / 4f
+        val sx = hx + (fx - hx) * t
+        val sy = hy + (fy - hy) * t
+        drawLine(OakSeam, camera.wallPt(sx, sy, 0.05f), camera.wallPt(sx, sy, doorH - 0.04f), stroke * 0.4f)
+    }
+    val kx = hx + (fx - hx) * 0.78f
+    val ky = hy + (fy - hy) * 0.78f
+    drawCircle(OakPost, stroke * 1.25f, camera.wallPt(kx, ky, 0.48f))
+    drawLine(OakPost, a0, a1, stroke * 1.8f)
+    drawLine(OakPost, b0, b1, stroke * 1.5f)
+    drawLine(OakPost, a1, b1, stroke * 1.6f)
+    drawLine(OakPost, camera.wallPt(hx, hy, OakBackH), camera.wallPt(hx, hy + 1f, OakBackH), stroke * 2.4f)
+    drawLine(OakPost, camera.wallPt(hx, hy + 1f, 0f), camera.wallPt(hx, hy + 1f, OakBackH), stroke * 2.0f)
+}
+
+/** Four-leg oak chair with one slat. [backEast] puts the slat on the +x side. */
+private fun DrawScope.drawOakChair(camera: OfficeCamera, x: Float, y: Float, backEast: Boolean) {
+    val seat = 0.32f
+    val top = 0.70f
+    val s = 0.22f
+    val stroke = (camera.tileW * camera.scale * 0.028f).coerceAtLeast(1.2f)
+    val feet = listOf(
+        x - s to y - s,
+        x + s to y - s,
+        x + s to y + s,
+        x - s to y + s,
+    )
+    for ((lx, ly) in feet) {
+        drawLine(OakPost, camera.wallPt(lx, ly, 0.02f), camera.wallPt(lx, ly, seat), stroke * 1.25f)
+    }
+    drawPath(
+        quad(
+            camera.wallPt(x - s, y - s, seat),
+            camera.wallPt(x + s, y - s, seat),
+            camera.wallPt(x + s, y + s, seat),
+            camera.wallPt(x - s, y + s, seat),
+        ),
+        OakPlank,
+    )
+    val (p0, p1) = if (backEast) {
+        (x + s to y - s) to (x + s to y + s)
+    } else {
+        (x - s to y + s) to (x + s to y + s)
+    }
+    drawLine(OakPost, camera.wallPt(p0.first, p0.second, seat), camera.wallPt(p0.first, p0.second, top), stroke * 1.4f)
+    drawLine(OakPost, camera.wallPt(p1.first, p1.second, seat), camera.wallPt(p1.first, p1.second, top), stroke * 1.4f)
+    drawLine(
+        OakPlankDark,
+        camera.wallPt(p0.first, p0.second, top - 0.08f),
+        camera.wallPt(p1.first, p1.second, top - 0.08f),
+        stroke * 2.2f,
+    )
 }
 
 /**
@@ -1445,8 +1630,8 @@ private fun DrawScope.drawTvSlides(tv: TvState, tl: Offset, tr: Offset, bl: Offs
     c.restore()
 }
 
-/** Long wooden meeting table over [OfficeMap.confTable], with a small plant on top. */
-private fun DrawScope.drawConfTable(sprites: SpriteStore, camera: OfficeCamera) {
+/** Long meeting table over [OfficeMap.confTable]. Premium is black lacquer with a hub; oakwood is bare boards. */
+private fun DrawScope.drawConfTable(camera: OfficeCamera, oak: Boolean = false) {
     val cells = OfficeMap.confTable
     val inset = 0.12f
     val x0 = cells.minOf { it.x } - 0.5f + inset
@@ -1454,41 +1639,104 @@ private fun DrawScope.drawConfTable(sprites: SpriteStore, camera: OfficeCamera) 
     val y0 = cells.minOf { it.y } - 0.5f + inset + 0.08f
     val y1 = cells.maxOf { it.y } + 0.5f - inset - 0.08f
     val lift = 0.62f
-    val thick = 0.12f
+    val thick = if (oak) 0.18f else 0.12f
+    val topColor = if (oak) OakTableTop else ConfBlackTop
+    val edgeColor = if (oak) OakTableEdge else ConfBlackEdge
+    val sideColor = if (oak) OakTableSide else ConfBlackSide
+    val legColor = if (oak) OakPost else ConfFrame
     val stroke = (camera.tileW * camera.scale * 0.035f).coerceAtLeast(1.5f)
     // Legs.
     for ((lx, ly) in listOf(x0 + 0.15f to y0 + 0.15f, x1 - 0.15f to y0 + 0.15f, x1 - 0.15f to y1 - 0.15f, x0 + 0.15f to y1 - 0.15f)) {
-        drawLine(ConfFrame, camera.wallPt(lx, ly, 0f), camera.wallPt(lx, ly, lift - thick), stroke * 1.3f)
+        drawLine(legColor, camera.wallPt(lx, ly, 0f), camera.wallPt(lx, ly, lift - thick), stroke * (if (oak) 1.8f else 1.3f))
     }
     val tA = camera.wallPt(x0, y0, lift); val tB = camera.wallPt(x1, y0, lift)
     val tC = camera.wallPt(x1, y1, lift); val tD = camera.wallPt(x0, y1, lift)
     val bB = camera.wallPt(x1, y0, lift - thick); val bC = camera.wallPt(x1, y1, lift - thick)
     val bD = camera.wallPt(x0, y1, lift - thick)
     // Camera-facing edges: +x face (B→C) and +y face (C→D).
-    drawPath(quad(tB, tC, bC, bB), ConfWoodSide)
-    drawPath(quad(tC, tD, bD, bC), ConfWoodEdge)
-    drawPath(quad(tA, tB, tC, tD), ConfWoodTop)
-    // Plank lines along the long axis.
-    for (k in 1..3) {
-        val t = k / 4f
-        val gy = y0 + (y1 - y0) * t
-        drawLine(ConfWoodEdge.copy(alpha = 0.35f), camera.wallPt(x0, gy, lift), camera.wallPt(x1, gy, lift), stroke * 0.4f)
+    drawPath(quad(tB, tC, bC, bB), sideColor)
+    drawPath(quad(tC, tD, bD, bC), edgeColor)
+    drawPath(quad(tA, tB, tC, tD), topColor)
+    if (oak) {
+        // Plank lines. One board is a darker offcut.
+        for (k in 1..3) {
+            val t = k / 4f
+            val gy = y0 + (y1 - y0) * t
+            drawLine(OakSeam, camera.wallPt(x0, gy, lift), camera.wallPt(x1, gy, lift), stroke * (if (k == 2) 0.9f else 0.4f))
+        }
+    } else {
+        // One cool sheen on the lacquer. No wood grain.
+        drawLine(
+            ConfSheen,
+            camera.wallPt(x0 + 0.18f, y0 + 0.16f, lift),
+            camera.wallPt(x1 - 0.45f, y0 + (y1 - y0) * 0.28f, lift),
+            stroke * 0.35f,
+        )
     }
-    // Centre cable port.
     val mx = (x0 + x1) / 2f
     val my = (y0 + y1) / 2f
-    drawPath(
-        quad(camera.wallPt(mx - 0.08f, my - 0.08f, lift), camera.wallPt(mx + 0.08f, my - 0.08f, lift),
-            camera.wallPt(mx + 0.08f, my + 0.08f, lift), camera.wallPt(mx - 0.08f, my + 0.08f, lift)),
-        ConfFrame,
-    )
-    // Small table plant (reused sprite).
-    sprites.get("props/plant")?.let { plant ->
-        val anchor = camera.wallPt(mx - 0.35f, my - 0.15f, lift)
-        val w = camera.tileW * camera.scale * 0.24f
-        val h = w * plant.height / plant.width.toFloat()
-        drawSprite(plant.asImageBitmap(), Offset(anchor.x, anchor.y - h / 2f), w, h)
+    if (oak) {
+        drawCircle(OakKnot, stroke * 1.5f, camera.wallPt(mx + 0.28f, my + 0.12f, lift))
+        drawLine(OakPost, camera.wallPt(mx - 0.15f, my - 0.05f, lift), camera.wallPt(mx + 0.05f, my + 0.22f, lift), stroke * 0.45f)
+    } else {
+        drawConfHub(camera, mx, my, lift, stroke)
     }
+}
+
+/** Conference speakerphone: low puck, silver rim, mic keys, a live status light. */
+private fun DrawScope.drawConfHub(camera: OfficeCamera, mx: Float, my: Float, lift: Float, stroke: Float) {
+    val rx = 0.22f
+    val ry = 0.14f
+    val z1 = lift + 0.05f
+    drawPath(
+        quad(
+            camera.wallPt(mx + rx, my, z1),
+            camera.wallPt(mx, my + ry, z1),
+            camera.wallPt(mx, my + ry, lift),
+            camera.wallPt(mx + rx, my, lift),
+        ),
+        ConfHubBody,
+    )
+    drawPath(
+        quad(
+            camera.wallPt(mx, my + ry, z1),
+            camera.wallPt(mx - rx, my, z1),
+            camera.wallPt(mx - rx, my, lift),
+            camera.wallPt(mx, my + ry, lift),
+        ),
+        Color(0xFF1A1E26),
+    )
+    drawPath(
+        quad(
+            camera.wallPt(mx, my - ry, z1),
+            camera.wallPt(mx + rx, my, z1),
+            camera.wallPt(mx, my + ry, z1),
+            camera.wallPt(mx - rx, my, z1),
+        ),
+        ConfHubFace,
+    )
+    val rim = 0.72f
+    drawPath(
+        quad(
+            camera.wallPt(mx, my - ry * rim, z1),
+            camera.wallPt(mx + rx * rim, my, z1),
+            camera.wallPt(mx, my + ry * rim, z1),
+            camera.wallPt(mx - rx * rim, my, z1),
+        ),
+        ConfHubRim,
+    )
+    drawPath(
+        quad(
+            camera.wallPt(mx, my - ry * 0.40f, z1),
+            camera.wallPt(mx + rx * 0.40f, my, z1),
+            camera.wallPt(mx, my + ry * 0.40f, z1),
+            camera.wallPt(mx - rx * 0.40f, my, z1),
+        ),
+        ConfHubBody,
+    )
+    drawCircle(ConfHubLed, stroke * 0.65f, camera.wallPt(mx, my - ry * 0.02f, z1))
+    drawCircle(Color(0xFF6B7380), stroke * 0.42f, camera.wallPt(mx - rx * 0.28f, my + ry * 0.08f, z1))
+    drawCircle(Color(0xFF6B7380), stroke * 0.42f, camera.wallPt(mx + rx * 0.28f, my + ry * 0.08f, z1))
 }
 
 /** Screen → fractional grid (inverse of [OfficeCamera.toScreen]). */
@@ -1517,7 +1765,7 @@ private fun hitsConfRoom(camera: OfficeCamera, tap: Offset): Boolean {
 }
 
 /** Pulsing amber outline + soft glow along the room footprint and wall tops. */
-private fun DrawScope.drawConfHighlight(camera: OfficeCamera, nowMs: Long) {
+private fun DrawScope.drawConfHighlight(camera: OfficeCamera, nowMs: Long, oak: Boolean = false) {
     val t = ((nowMs % 1400L) / 1400f)
     val pulse = 0.5f + 0.5f * kotlin.math.sin(t * 6.2832f)
     val x0 = OfficeMap.confX0 - 0.5f
@@ -1525,9 +1773,10 @@ private fun DrawScope.drawConfHighlight(camera: OfficeCamera, nowMs: Long) {
     val x1 = x0 + OfficeMap.confSize
     val y1 = y0 + OfficeMap.confSize
     val corners = listOf(x0 to y0, x1 to y0, x1 to y1, x0 to y1)
+    val topH = if (oak) OakBackH else ConfWallH
     val base = (camera.tileW * camera.scale * 0.03f).coerceAtLeast(1.5f)
     val glow = Color(0xFFFFC94A)
-    for (h in listOf(0f, ConfWallH)) {
+    for (h in listOf(0f, topH)) {
         val pts = corners.map { (gx, gy) -> camera.wallPt(gx, gy, h) }
         val path = Path().apply {
             moveTo(pts[0].x, pts[0].y)
@@ -1538,7 +1787,7 @@ private fun DrawScope.drawConfHighlight(camera: OfficeCamera, nowMs: Long) {
         drawPath(path, glow.copy(alpha = 0.65f + 0.35f * pulse), style = androidx.compose.ui.graphics.drawscope.Stroke(width = base * 1.2f))
     }
     for ((gx, gy) in corners) {
-        drawLine(glow.copy(alpha = 0.5f + 0.4f * pulse), camera.wallPt(gx, gy, 0f), camera.wallPt(gx, gy, ConfWallH), base * 1.2f)
+        drawLine(glow.copy(alpha = 0.5f + 0.4f * pulse), camera.wallPt(gx, gy, 0f), camera.wallPt(gx, gy, topH), base * 1.2f)
     }
     for (cell in OfficeMap.confCells) {
         diamond(camera.toScreen(cell.x.toFloat(), cell.y.toFloat()), camera.tileW * camera.scale, camera.tileH * camera.scale, glow.copy(alpha = 0.06f + 0.08f * pulse))

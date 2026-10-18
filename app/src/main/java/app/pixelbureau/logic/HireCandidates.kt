@@ -5,6 +5,11 @@ import kotlin.random.Random
 /** Chip that shows every role in the PixelHire pool. */
 const val HireRoleAll = "All Roles"
 
+/**
+ * Not a department. These candidates are drawn only when the chip is [HireRoleAll].
+ */
+const val HireRoleGeneral = "General"
+
 val hireRoleFilters = listOf(
     HireRoleAll,
     "Design",
@@ -50,6 +55,18 @@ fun openingCandidatePool(): List<HireCandidate> = listOf(
     hireCatalog.first { it.name == "Diego Santos" },
 )
 
+/**
+ * Everyone in [role], in catalog order. [HireRoleAll] includes general staff.
+ * A department list does not.
+ */
+fun candidatesForRole(role: String): List<HireCandidate> {
+    return if (role == HireRoleAll) {
+        hireCatalog
+    } else {
+        hireCatalog.filter { it.role.equals(role, ignoreCase = true) }
+    }
+}
+
 /** A new handful of candidates. Skips [avoid] while enough people remain. */
 fun rollCandidatePool(
     random: Random = Random.Default,
@@ -65,8 +82,8 @@ fun rollCandidatePool(
     val fresh = scoped.filter { it.name !in avoid }
     val source = when {
         fresh.size >= count -> fresh
-        scoped.size >= count -> scoped
-        else -> hireCatalog
+        scoped.isNotEmpty() -> scoped
+        else -> emptyList()
     }
     return source.shuffled(random).take(count)
 }
@@ -84,21 +101,36 @@ fun HireCandidate.hiredLook(): String {
         return own
     }
     return when (name) {
-        "Ryo" -> "nico"
-        "Ames" -> "ops"
-        "Cleo" -> "cursor"
-        "June" -> "pixel"
-        "Pax" -> "kai"
-        "Ivo" -> "byte"
-        "Kenji Tanaka" -> "pixel"
-        "Sari Kim" -> "kai"
-        "Diego Santos" -> "byte"
+        "Ryo" -> "ryo"
+        "Ames" -> "ames"
+        "Cleo" -> "cleo"
+        "June" -> "june"
+        "Pax" -> "pax"
+        "Ivo" -> "ivo"
+        "Kenji Tanaka" -> "kenji"
+        "Sari Kim" -> "sari"
+        "Diego Santos" -> "diego"
+        "Yuki Tanaka" -> "yuki"
+        "Minjun Park" -> "minjun"
+        "Wei Zhang" -> "wei"
+        "Sakura Ito" -> "sakura"
+        "Jia Li" -> "jia"
+        "Haruto Sato" -> "haruto"
+        "Soojin Han" -> "soojin"
+        "Chen Liu" -> "chen"
+        "Hana Kim" -> "hana"
+        "Bo Wang" -> "bo"
+        "Ren Takahashi" -> "ren"
+        "Lin Xu" -> "lin"
         else -> "pixel"
     }
 }
 
 fun HireCandidate.matches(query: String, roleFilter: String): Boolean {
-    if (roleFilter != HireRoleAll && !role.equals(roleFilter, ignoreCase = true)) {
+    // General staff have no department chip. All Roles is the only list they join.
+    if (role.equals(HireRoleGeneral, ignoreCase = true)) {
+        if (roleFilter != HireRoleAll) return false
+    } else if (roleFilter != HireRoleAll && !role.equals(roleFilter, ignoreCase = true)) {
         return false
     }
     val needle = query.trim()
@@ -337,11 +369,144 @@ private val hireCatalog = listOf(
         outputPersonality = "Steady and direct. Lead with the decision. Then budget, committed, and the owner. No pep talk.",
         site = "Hybrid",
     ),
+    HireCandidate(
+        name = "Yuki Tanaka",
+        title = "QA Engineer",
+        role = "Engineering",
+        skills = listOf("Testing", "Bug Reports", "Edge Cases"),
+        remote = true,
+        stars = 4,
+        portraitKey = "yuki",
+        instructions = "You are a QA engineer. Break the feature before a user does: the steps to reproduce, what you expected, and what happened instead. Rank bugs by what a user would feel first.",
+        outputPersonality = "Patient and precise. Number the steps. One bug per note: expected, actual, and how bad it is. No blame, no jargon.",
+    ),
+    HireCandidate(
+        name = "Minjun Park",
+        title = "DevOps Engineer",
+        role = "Engineering",
+        skills = listOf("Deploys", "Servers", "Uptime"),
+        remote = false,
+        stars = 5,
+        portraitKey = "minjun",
+        instructions = "You are a DevOps engineer. Keep the bureau online: what deploys, what to watch, and what to roll back when a release goes wrong. Name the signal that says trouble before users feel it.",
+        outputPersonality = "Calm and direct. Lead with the status. Then watch, deploy, and rollback in one line each. No acronym soup.",
+    ),
+    HireCandidate(
+        name = "Wei Zhang",
+        title = "Data Engineer",
+        role = "Engineering",
+        skills = listOf("SQL", "Pipelines", "Dashboards"),
+        remote = true,
+        stars = 4,
+        portraitKey = "wei",
+        instructions = "You are a data engineer. Turn a data question into where the numbers live, how they flow, and the one query or check that answers it. Say what the data cannot tell you.",
+        outputPersonality = "Careful and plain. Lead with the answer or the gap. Name the table and the filter. Mark guesses as guesses.",
+    ),
+    HireCandidate(
+        name = "Sakura Ito",
+        title = "Illustrator",
+        role = "Design",
+        skills = listOf("Spot Art", "Covers", "Icons"),
+        remote = true,
+        stars = 5,
+        portraitKey = "sakura",
+        instructions = "You are an illustrator. Turn a story into pictures: what each image shows, the mood, and where it sits on the page. Keep one consistent style across the set.",
+        outputPersonality = "Warm and visual. Describe each image in one or two sentences. Name the subject, the mood, and the placement. No art-school essays.",
+    ),
+    HireCandidate(
+        name = "Jia Li",
+        title = "Motion Designer",
+        role = "Design",
+        skills = listOf("Animation", "Transitions", "Loops"),
+        remote = true,
+        stars = 4,
+        portraitKey = "jia",
+        instructions = "You are a motion designer. Turn a static screen into movement: what animates, how long it takes, and what it tells the user. Keep motion short enough to feel instant.",
+        outputPersonality = "Lively and exact. Name the element, the move, and the timing in one line each. End with what to do if the animation cannot run.",
+    ),
+    HireCandidate(
+        name = "Haruto Sato",
+        title = "Content Strategist",
+        role = "Marketing",
+        skills = listOf("Calendars", "Briefs", "Voice"),
+        remote = false,
+        stars = 4,
+        portraitKey = "haruto",
+        instructions = "You are a content strategist. Turn a launch into a calendar: what goes out, where, and why that week. Every piece names its reader and the one thing it asks them to do.",
+        outputPersonality = "Orderly and plain. A short dated list. One line per piece: channel, reader, ask. No hype words.",
+    ),
+    HireCandidate(
+        name = "Soojin Han",
+        title = "PR Specialist",
+        role = "Marketing",
+        skills = listOf("Press", "Statements", "Outreach"),
+        remote = true,
+        stars = 3,
+        portraitKey = "soojin",
+        instructions = "You are a PR specialist. Turn bureau news into a short statement, the three questions reporters will ask, and the answer to each. Keep every quote short enough to print.",
+        outputPersonality = "Poised and brief. Statement first, then questions with one-line answers. No spin, no filler.",
+    ),
+    HireCandidate(
+        name = "Chen Liu",
+        title = "Procurement Specialist",
+        role = "Operations",
+        skills = listOf("Quotes", "Vendors", "Orders"),
+        remote = false,
+        stars = 4,
+        portraitKey = "chen",
+        instructions = "You are a procurement specialist. Turn a shopping list into quotes: who sells it, what it costs, and when it arrives. Compare at least two options and say which one you would pick.",
+        outputPersonality = "Practical and numeric. A short table in words: vendor, price, arrival. Lead with the pick and the reason in one line.",
+    ),
+    HireCandidate(
+        name = "Hana Kim",
+        title = "Office Manager",
+        role = "Operations",
+        skills = listOf("Supplies", "Calendar", "Space"),
+        remote = false,
+        stars = 3,
+        portraitKey = "hana",
+        instructions = "You are the office manager. Turn a chaotic week into rooms, supplies, and a calendar that works. Name who needs what and the one thing to buy or book first.",
+        outputPersonality = "Warm and orderly. A short checklist. Put the owner on each line. No pep talk.",
+    ),
+    HireCandidate(
+        name = "Bo Wang",
+        title = "Auditor",
+        role = "Finance",
+        skills = listOf("Receipts", "Controls", "Reviews"),
+        remote = false,
+        stars = 4,
+        portraitKey = "bo",
+        instructions = "You are an auditor. Turn a pile of records into what checks out, what is missing, and the one control that would have caught it. Do not invent numbers you were not given.",
+        outputPersonality = "Serious and exact. Lead with the finding. Then evidence, missing, and the fix in one line each. Mark estimates as estimates.",
+    ),
+    HireCandidate(
+        name = "Ren Takahashi",
+        title = "Payroll Specialist",
+        role = "Finance",
+        skills = listOf("Pay Runs", "Timesheets", "Benefits"),
+        remote = true,
+        stars = 3,
+        portraitKey = "ren",
+        instructions = "You run payroll. Turn hours and rates into who gets paid, how much, and the one line to double-check before the run. Flag anything that looks off instead of guessing.",
+        outputPersonality = "Careful and brief. A short list: person, amount, check. Put the pay date on the first line. No pep talk.",
+    ),
+    HireCandidate(
+        name = "Lin Xu",
+        title = "Translator",
+        role = HireRoleGeneral,
+        skills = listOf("Chinese", "Korean", "Japanese"),
+        remote = true,
+        stars = 5,
+        portraitKey = "lin",
+        instructions = "You translate between English, Chinese, Korean, and Japanese. Keep names, numbers, and the tone exactly as the original means them. When a phrase has no clean match, give the closest version and say what was lost.",
+        outputPersonality = "Faithful and brief. Translation first, then a one-line note only when something was lost. No extra commentary.",
+    ),
     // Original office looks. Hiring keeps this sprite key (name matches looks).
+    // General roles: listed only under All Roles, not under a department chip.
     HireCandidate(
         name = "Pixel",
         title = "Prototyper",
-        role = "Engineering",
+        role = HireRoleGeneral,
         skills = listOf("Drafts", "Shipping", "Clarity"),
         remote = false,
         stars = 5,
@@ -352,7 +517,7 @@ private val hireCatalog = listOf(
     HireCandidate(
         name = "Kai",
         title = "Design Critic",
-        role = "Design",
+        role = HireRoleGeneral,
         skills = listOf("Review", "Risks", "Edits"),
         remote = false,
         stars = 5,
@@ -363,7 +528,7 @@ private val hireCatalog = listOf(
     HireCandidate(
         name = "Byte",
         title = "Researcher",
-        role = "Operations",
+        role = HireRoleGeneral,
         skills = listOf("Notes", "Sources", "Guesses"),
         remote = true,
         stars = 4,
@@ -374,7 +539,7 @@ private val hireCatalog = listOf(
     HireCandidate(
         name = "Ops",
         title = "Office Lead",
-        role = "Operations",
+        role = HireRoleGeneral,
         skills = listOf("Desks", "Handoffs", "Floor"),
         remote = false,
         stars = 4,
@@ -385,7 +550,7 @@ private val hireCatalog = listOf(
     HireCandidate(
         name = "Cursor",
         title = "Tooling Engineer",
-        role = "Engineering",
+        role = HireRoleGeneral,
         skills = listOf("Tools", "Shortcuts", "Fixes"),
         remote = true,
         stars = 4,
@@ -396,7 +561,7 @@ private val hireCatalog = listOf(
     HireCandidate(
         name = "You",
         title = "Studio Host",
-        role = "Marketing",
+        role = HireRoleGeneral,
         skills = listOf("Welcome", "Tours", "Voice"),
         remote = false,
         stars = 3,

@@ -87,7 +87,7 @@ internal fun PixegleWordmark(
     )
 }
 
-/** Pixegle logo + hamburger, used on top of every web-style page. */
+/** Pixegle logo row on top of web-style pages (fixed 44dp height). */
 @Composable
 internal fun PixegleHeader() {
     Row(
@@ -95,27 +95,6 @@ internal fun PixegleHeader() {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         PixegleWordmark(heightDp = 32.dp)
-        Spacer(Modifier.weight(1f))
-        Box(
-            Modifier
-                .size(36.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color(0xFFFFFBF4))
-                .border(1.5.dp, KaiBorder, RoundedCornerShape(10.dp)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                repeat(3) {
-                    Box(
-                        Modifier
-                            .width(16.dp)
-                            .height(2.dp)
-                            .clip(RoundedCornerShape(1.dp))
-                            .background(KaiInk),
-                    )
-                }
-            }
-        }
     }
 }
 

@@ -1,5 +1,8 @@
 package app.pixelbureau
 
+import app.pixelbureau.Pixel_Bureau_Web.catalog.ShopCatalog
+import app.pixelbureau.Pixel_Bureau_Web.catalog.ShopCategory
+import app.pixelbureau.Pixel_Bureau_Web.catalog.ShopStore
 import app.pixelbureau.logic.Cell
 import app.pixelbureau.logic.MapPlacement
 import app.pixelbureau.logic.OfficeMap
@@ -7,8 +10,15 @@ import app.pixelbureau.logic.OfficeSim
 import app.pixelbureau.logic.PlacedProp
 import app.pixelbureau.logic.SimAgent
 import app.pixelbureau.logic.findPath
+import app.pixelbureau.ui.CONF_STYLE_OAK
+import app.pixelbureau.ui.CONF_STYLE_PREMIUM
+import app.pixelbureau.ui.actorSortDepth
+import app.pixelbureau.ui.confChairSortDepth
+import app.pixelbureau.ui.confStyleFor
+import app.pixelbureau.ui.placeableCopies
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import kotlin.math.roundToInt
@@ -124,7 +134,7 @@ class ConferenceRoomTest {
 
     @Test
     fun shopCatalogNeverListsConferenceProps() {
-        for (item in app.pixelbureau.Pixel_Bureau_Web.catalog.ShopCatalog.items) {
+        for (item in ShopCatalog.items) {
             assertFalse(
                 "shop must not sell conference built-in ${item.id}",
                 item.id.startsWith("prop_conf_"),
@@ -136,7 +146,58 @@ class ConferenceRoomTest {
         }
         assertFalse(
             "conf_* keys must stay out of mapPropKeys",
-            app.pixelbureau.Pixel_Bureau_Web.catalog.ShopCatalog.mapPropKeys.any { it.startsWith("conf_") },
+            ShopCatalog.mapPropKeys.any { it.startsWith("conf_") },
         )
+    }
+
+    @Test
+    fun pazadaSellsTwoConferenceStylesInTheirOwnCategory() {
+        val oak = ShopCatalog.byId("oak_conference")
+        val premium = ShopCatalog.byId("premium_conference")
+        assertNotNull(oak)
+        assertNotNull(premium)
+        assertEquals("Dream Starter - Oakwood simple", oak!!.name)
+        assertEquals("Premium Startup", premium!!.name)
+        assertEquals(ShopCategory.Conference, oak.category)
+        assertEquals(ShopCategory.Conference, premium.category)
+        assertEquals(ShopStore.Pazada, oak.store)
+        assertEquals(ShopStore.Pazada, premium.store)
+        assertTrue(oak.featured && premium.featured)
+        assertTrue("oakwood must cost less", oak.salePrice < premium.salePrice)
+        assertEquals(ShopCatalog.GROUP_CONF, oak.exclusiveGroup)
+        assertEquals(ShopCatalog.GROUP_CONF, premium.exclusiveGroup)
+        assertEquals(listOf("premium_conference"), ShopCatalog.exclusiveRivals("oak_conference").map { it.id })
+        assertEquals(listOf("oak_conference"), ShopCatalog.exclusiveRivals("premium_conference").map { it.id })
+        // Styles swap the existing room. They must not take a floor cell.
+        assertTrue(placeableCopies(mapOf("oak_conference" to 1, "premium_conference" to 1)).isEmpty())
+    }
+
+    @Test
+    fun agentsOnConferenceSeatsDrawInFrontOfTheirChair() {
+        for (seat in OfficeMap.confSeats) {
+            val chair = confChairSortDepth(seat.x, seat.y)
+            val sitting = actorSortDepth(seat.x.toFloat(), seat.y.toFloat(), "sit", useSeatTuck = false)
+            val typing = actorSortDepth(seat.x.toFloat(), seat.y.toFloat(), "type", useSeatTuck = false)
+            val walking = actorSortDepth(seat.x.toFloat(), seat.y.toFloat(), "walk", useSeatTuck = false)
+            val idle = actorSortDepth(seat.x.toFloat(), seat.y.toFloat(), "idle", useSeatTuck = false)
+            assertTrue("sitter at $seat should sit behind the chair", sitting < chair)
+            assertTrue("typer at $seat should sit behind the chair", typing < chair)
+            assertTrue("walker at $seat should draw in front of the chair", walking > chair)
+            assertTrue("idle agent at $seat should draw in front of the chair", idle > chair)
+            // Front glass is the tile edge at +0.5. Bodies stay inside the room.
+            val frontGlass = seat.x + seat.y + 0.5f
+            assertTrue("walker at $seat should stay behind the front glass", walking < frontGlass)
+        }
+        // Desk tuck is unchanged: still under a work-chair at the same tile.
+        val desk = actorSortDepth(2f, 3f, "type", useSeatTuck = true)
+        assertEquals(2f + 3f - 0.04f, desk, 0.001f)
+    }
+
+    @Test
+    fun conferenceStyleFollowsOwnership() {
+        assertEquals(CONF_STYLE_PREMIUM, confStyleFor(emptyMap()))
+        assertEquals(CONF_STYLE_OAK, confStyleFor(mapOf("oak_conference" to 1)))
+        assertEquals(CONF_STYLE_PREMIUM, confStyleFor(mapOf("premium_conference" to 1)))
+        assertEquals(CONF_STYLE_PREMIUM, confStyleFor(mapOf("oak_conference" to 1, "premium_conference" to 1)))
     }
 }
