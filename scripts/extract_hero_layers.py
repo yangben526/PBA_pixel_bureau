@@ -7,7 +7,7 @@ portal_hero.png (2172x724) -> portal_hero_{base,clouds,city}.png
 - clouds: white puffs above the skyline, tileable full-width strip.
 - city: near buildings + trees, tileable full-width strip.
 
-Only fully-opaque layer pixels are inpainted (per-row haze tones);
+Only fully-opaque layer pixels are inpainted (local smoothed sky tones);
 everything else keeps original pixels, so the rest frame composites back
 EXACTLY (asserted). Deterministic; no arguments.
 """
@@ -159,6 +159,16 @@ def main():
         ).filter(ImageFilter.MinFilter(17))
     )
     region = region | (closed & ~region & ~clearly_sky & bounds)
+    # Absorb high-contrast wisps the flood can't see: sky redness is a
+    # function of y only, so anything much redder is cloud-related.
+    row_r = np.zeros(H, np.float32)
+    for y in range(H):
+        sel = sky[y]
+        row_r[y] = np.median(r[y][sel]) if sel.any() else (row_r[y - 1] if y else 85)
+    region = region | ((np.abs(r - row_r[:, None]) > 6) & bounds)
+    # Absorb the bright contour ring just outside the region.
+    ring3 = np.asarray(Image.fromarray(region).filter(ImageFilter.MaxFilter(7))) & ~region
+    region = region | (ring3 & bounds & (r > row_r[:, None] + 6))
     wide = np.asarray(Image.fromarray(region).filter(ImageFilter.MaxFilter(7)))
     wide = wide & (yy < col_top[xx]) & ~letters_hi
     ramp = np.clip((mn - 130) / (215 - 130), 0, 1)
@@ -169,42 +179,40 @@ def main():
     eroded = np.asarray(Image.fromarray(city).filter(ImageFilter.MinFilter(3)))
     city_alpha = np.where(eroded, 255, np.where(city, 128, 0)).astype(np.uint8)
 
-    # Per-row haze tones from clear sky; inpaint opaque-only (rest-exact).
-    clear = sky & ~wide
-    tones = np.zeros((H, 3), np.uint8)
-    have = np.zeros(H, bool)
-    for y in range(H):
-        sel = clear[y]
-        if sel.any():
-            tones[y] = np.median(a[y][sel], axis=0)
-            have[y] = True
-    assert have.any(), "no clear sky for tones"
-    last = tones[have][0]
-    for y in range(H):
-        if have[y]:
-            last = tones[y]
-        else:
-            tones[y] = last
-    def interior_weight(opaque, depth=8):
-        """0 at the opaque boundary -> 1 deep inside (for seamless inpaint)."""
-        w = np.zeros(opaque.shape, np.float32)
-        m = opaque.copy()
-        for i in range(1, depth + 1):
-            m = np.asarray(Image.fromarray(m).filter(ImageFilter.MinFilter(3)))
-            w[m] = i / depth
-        w[opaque & (w == 0)] = 1 / depth
-        return w
+    # Local sky tones: nearest clear-sky color per pixel, smoothed. Inpaint
+    # matches surroundings (no silhouette ghosts); rest stays exact.
+    clear = sky & (city_alpha == 0) & (cloud_alpha == 0)
+    srcy = np.where(clear, yy, -1)
+    srcx = np.where(clear, xx, -1)
+    def shift_in(arr, dy, dx, fill):
+        out = np.full_like(arr, fill)
+        ys0, ys1 = max(0, dy), min(H, H + dy)
+        xs0, xs1 = max(0, dx), min(W, W + dx)
+        out[ys0:ys1, xs0:xs1] = arr[ys0 - dy:ys1 - dy, xs0 - dx:xs1 - dx]
+        return out
 
-    base = a.copy().astype(np.float32)
-    city_opaque = city_alpha == 255
-    w = interior_weight(city_opaque)
-    ys, xs = np.where(city_opaque)
-    base[ys, xs] = (1 - w[ys, xs])[:, None] * a[ys, xs] + w[ys, xs][:, None] * tones[ys]
-    cloud_opaque = cloud_alpha == 255
-    w = interior_weight(cloud_opaque)
-    ys, xs = np.where(cloud_opaque)
-    base[ys, xs] = (1 - w[ys, xs])[:, None] * a[ys, xs] + w[ys, xs][:, None] * tones[ys]
-    base = np.round(base).astype(np.uint8)
+    known = clear.copy()
+    for _ in range(400):
+        if known.all():
+            break
+        grown = np.zeros_like(known)
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if not dy and not dx:
+                    continue
+                shifted = shift_in(known, dy, dx, False)
+                take = ~known & shifted
+                srcy[take] = shift_in(srcy, dy, dx, -1)[take]
+                srcx[take] = shift_in(srcx, dy, dx, -1)[take]
+                grown |= shifted
+        known |= grown
+    tone_map = a[srcy.clip(0), srcx.clip(0)]
+    tone_map = np.asarray(
+        Image.fromarray(tone_map.astype(np.uint8)).filter(ImageFilter.GaussianBlur(12))
+    )
+    base = a.copy()
+    base[city_alpha == 255] = tone_map[city_alpha == 255]
+    base[cloud_alpha == 255] = tone_map[cloud_alpha == 255]
 
     Image.fromarray(base.astype(np.uint8)).save(DRAWABLE / "portal_hero_base.png")
     Image.fromarray(np.dstack([a, cloud_alpha]).astype(np.uint8)).save(DRAWABLE / "portal_hero_clouds.png")

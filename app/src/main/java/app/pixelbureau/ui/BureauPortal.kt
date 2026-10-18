@@ -1,5 +1,10 @@
 package app.pixelbureau.ui
 
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -24,6 +29,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -31,7 +37,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
@@ -49,6 +57,9 @@ import androidx.compose.ui.unit.sp
 import android.graphics.BitmapFactory
 import app.pixelbureau.R
 import kotlin.math.roundToInt
+import app.pixelbureau.logic.HeroCityLoopMs
+import app.pixelbureau.logic.HeroCloudLoopMs
+import app.pixelbureau.logic.heroTileShift
 import app.pixelbureau.modules.pixelnews.PixelNews
 import app.pixelbureau.modules.pixelnews.PixelNewsCard
 import app.pixelbureau.modules.pixelnews.PixelNewsPlace
@@ -271,23 +282,65 @@ private fun PlaceShelf(title: String, empty: String, note: String) {
 @Composable
 private fun PixegleHero() {
     val context = LocalContext.current
-    val image = remember(context) {
-        BitmapFactory.decodeResource(context.resources, R.drawable.portal_hero).asImageBitmap()
+    val base = remember(context) {
+        BitmapFactory.decodeResource(context.resources, R.drawable.portal_hero_base).asImageBitmap()
     }
-    val ratio = image.width / image.height.toFloat()
+    val city = remember(context) {
+        BitmapFactory.decodeResource(context.resources, R.drawable.portal_hero_city).asImageBitmap()
+    }
+    val clouds = remember(context) {
+        BitmapFactory.decodeResource(context.resources, R.drawable.portal_hero_clouds).asImageBitmap()
+    }
+    val ratio = base.width / base.height.toFloat()
+    val loop = rememberInfiniteTransition(label = "pixegleHero")
+    val cloudProgress by loop.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(animation = tween(HeroCloudLoopMs, easing = LinearEasing)),
+        label = "pixegleHeroClouds",
+    )
+    val cityProgress by loop.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(animation = tween(HeroCityLoopMs, easing = LinearEasing)),
+        label = "pixegleHeroCity",
+    )
     Canvas(
         Modifier
             .fillMaxWidth()
             .aspectRatio(ratio)
             .semantics { contentDescription = "Pixegle" },
     ) {
+        val w = size.width.roundToInt().coerceAtLeast(1)
+        val h = size.height.roundToInt().coerceAtLeast(1)
         drawImage(
-            image,
+            base,
             dstOffset = IntOffset.Zero,
-            dstSize = IntSize(size.width.roundToInt().coerceAtLeast(1), size.height.roundToInt().coerceAtLeast(1)),
+            dstSize = IntSize(w, h),
             filterQuality = FilterQuality.None,
         )
+        drawWrappedTile(city, heroTileShift(cityProgress, city.width), w, h)
+        drawWrappedTile(clouds, heroTileShift(cloudProgress, clouds.width), w, h)
     }
+}
+
+/** Draws [tile] twice so a rightward [shiftPx] scroll wraps seamlessly. */
+private fun DrawScope.drawWrappedTile(tile: ImageBitmap, shiftPx: Int, dstW: Int, dstH: Int) {
+    val scale = dstW / tile.width.toFloat()
+    val first = ((shiftPx - tile.width) * scale).roundToInt()
+    val second = (shiftPx * scale).roundToInt()
+    drawImage(
+        tile,
+        dstOffset = IntOffset(first, 0),
+        dstSize = IntSize(dstW, dstH),
+        filterQuality = FilterQuality.None,
+    )
+    drawImage(
+        tile,
+        dstOffset = IntOffset(second, 0),
+        dstSize = IntSize(dstW, dstH),
+        filterQuality = FilterQuality.None,
+    )
 }
 
 @Composable
