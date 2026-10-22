@@ -9,7 +9,7 @@ portal_hero.png (2172x724) -> portal_hero_{base,clouds,city}.png
 
 Only fully-opaque layer pixels are inpainted (local smoothed sky tones);
 everything else keeps original pixels, so the rest frame composites back
-EXACTLY (asserted). Deterministic; no arguments.
+exactly except the documented seam repaint (asserted). Deterministic.
 """
 
 from collections import deque
@@ -169,6 +169,10 @@ def main():
     # Absorb the bright contour ring just outside the region.
     ring3 = np.asarray(Image.fromarray(region).filter(ImageFilter.MaxFilter(7))) & ~region
     region = region | (ring3 & bounds & (r > row_r[:, None] + 6))
+    # Drop absorbed sky: real cloud bodies (cores, shading, outlines) are
+    # near-white or dark, while sky slabs are saturated mid-blue.
+    sky_slabs = ((mx - mn) > 100) & (ssum >= 450) & (ssum <= 680)
+    region = region & ~sky_slabs
     wide = np.asarray(Image.fromarray(region).filter(ImageFilter.MaxFilter(7)))
     wide = wide & (yy < col_top[xx]) & ~letters_hi
     ramp = np.clip((mn - 130) / (215 - 130), 0, 1)
@@ -176,8 +180,35 @@ def main():
     key = region
     print(f"cloud px: {int(key.sum())}")
 
-    eroded = np.asarray(Image.fromarray(city).filter(ImageFilter.MinFilter(3)))
+    # Erode with horizontal wraparound: the tile repeats, so edge columns
+    # must blend against the opposite edge, not transparency (seam line).
+    padded = np.pad(city, ((0, 0), (1, 1)), mode="wrap")
+    eroded = np.asarray(Image.fromarray(padded).filter(ImageFilter.MinFilter(3)))[:, 1:-1]
     city_alpha = np.where(eroded, 255, np.where(city, 128, 0)).astype(np.uint8)
+    city_rgb = a[:, :, :3].copy()
+
+    # Seam repair: sky slivers abutting the right tile edge would sweep past
+    # as a bright line against the left edge's trunk. Repaint each such run
+    # as a mirror-stretched continuation of the trunk row it meets.
+    repaint = np.zeros((H, W), bool)
+    for y in range(620, 700):
+        s = W - 1
+        while s >= W - 60 and city_alpha[y, s] != 0 and (b[y, s] - r[y, s]) > 60:
+            s -= 1
+        s += 1
+        run_len = W - s
+        if run_len < 2 or run_len > 40:
+            continue
+        t = 0
+        while t < W and not (g[y, t] > 150 and r[y, t] < 140):
+            t += 1
+        trunk = a[y, : max(t, 1)][:, :3]
+        for j in range(run_len):
+            src_j = round((run_len - 1 - j) * (len(trunk) - 1) / max(run_len - 1, 1))
+            city_rgb[y, s + j] = trunk[src_j]
+            city_alpha[y, s + j] = 255
+            repaint[y, s + j] = True
+    print(f"repainted seam px: {int(repaint.sum())}")
 
     # Local sky tones: nearest clear-sky color per pixel, smoothed. Inpaint
     # matches surroundings (no silhouette ghosts); rest stays exact.
@@ -216,14 +247,14 @@ def main():
 
     Image.fromarray(base.astype(np.uint8)).save(DRAWABLE / "portal_hero_base.png")
     Image.fromarray(np.dstack([a, cloud_alpha]).astype(np.uint8)).save(DRAWABLE / "portal_hero_clouds.png")
-    Image.fromarray(np.dstack([a, city_alpha]).astype(np.uint8)).save(DRAWABLE / "portal_hero_city.png")
+    Image.fromarray(np.dstack([city_rgb, city_alpha]).astype(np.uint8)).save(DRAWABLE / "portal_hero_city.png")
 
     comp = Image.fromarray(base.astype(np.uint8)).convert("RGBA")
     comp.alpha_composite(Image.open(DRAWABLE / "portal_hero_city.png"))
     comp.alpha_composite(Image.open(DRAWABLE / "portal_hero_clouds.png"))
-    diff = sum(1 for x, y in zip(comp.convert("RGB").tobytes(), src.tobytes()) if x != y)
-    print(f"rest diff bytes: {diff}")
-    assert diff == 0, "rest frame must equal source exactly"
+    diff = np.any(np.asarray(comp.convert("RGB")).astype(int) != a[:, :, :3], axis=2)
+    print(f"rest diff px: {int(diff.sum())}")
+    assert not (diff & ~repaint).any(), "rest frame must equal source outside repaint"
 
 
 main()

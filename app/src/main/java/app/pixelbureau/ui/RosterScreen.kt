@@ -47,6 +47,7 @@ import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -118,6 +119,15 @@ fun RosterScreen(model: BureauViewModel, modifier: Modifier = Modifier, onOpenOf
     var bureauStack by remember { mutableStateOf(listOf<String>()) }
     var bureauQuery by remember { mutableStateOf("") }
     val sprites = (LocalContext.current.applicationContext as PixelBureauApp).container.sprites
+
+    LaunchedEffect(ui.openPixelHire) {
+        if (ui.openPixelHire) {
+            bureauQuery = ""
+            bureauStack = listOf(PixelHirePlaceId)
+            desk = CompanyDesk.Pixegle
+            model.consumeOpenPixelHire()
+        }
+    }
 
     // System back inside Pixegle pops one page (e.g. Pazada → Pixegle home).
     BackHandler(enabled = desk == CompanyDesk.Pixegle && bureauStack.isNotEmpty()) {
@@ -262,7 +272,7 @@ fun RosterScreen(model: BureauViewModel, modifier: Modifier = Modifier, onOpenOf
                     )
                 }
                 KaiStepperButton("+", enabled = cap < OfficeMap.deskCount && stars >= 1) {
-                    model.openHiringSlot()
+                    model.openHiringSlot(promptHire = true)
                 }
                 Text(
                     "of ${OfficeMap.deskCount} desks",
@@ -278,9 +288,9 @@ fun RosterScreen(model: BureauViewModel, modifier: Modifier = Modifier, onOpenOf
             }
             Text(
                 if (freeSlots > 0) {
-                    "$freeSlots open slot${if (freeSlots == 1) "" else "s"} · hire in PixelHire. + costs ★1."
+                    "$freeSlots empty desk${if (freeSlots == 1) "" else "s"}. Hire someone in AgentHire."
                 } else {
-                    "No free slots. Spend ★1 on + (or PixelHire) to open a desk."
+                    "+ opens an empty desk for ★1. Hiring happens in AgentHire."
                 },
                 color = KaiInkMuted,
                 style = MaterialTheme.typography.bodySmall,
@@ -386,6 +396,36 @@ fun RosterScreen(model: BureauViewModel, modifier: Modifier = Modifier, onOpenOf
             onRetry = { agentId ->
                 model.retryTask(again.id, agentId)
                 retrying = null
+            },
+        )
+    }
+    if (ui.deskOpenedPrompt) {
+        AlertDialog(
+            onDismissRequest = { model.dismissDeskPrompt() },
+            containerColor = KaiCard,
+            title = {
+                Text("Desk opened", color = KaiInk, fontWeight = FontWeight.SemiBold)
+            },
+            text = {
+                Text(
+                    "★1 spent. The desk is empty. No one was hired. Go to AgentHire to hire an agent.",
+                    color = KaiInkMuted,
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        model.dismissDeskPrompt()
+                        bureauQuery = ""
+                        bureauStack = listOf(PixelHirePlaceId)
+                        desk = CompanyDesk.Pixegle
+                    },
+                ) { Text("Go to AgentHire", color = KaiAccentLo, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { model.dismissDeskPrompt() }) {
+                    Text("Not now", color = KaiInkMuted)
+                }
             },
         )
     }

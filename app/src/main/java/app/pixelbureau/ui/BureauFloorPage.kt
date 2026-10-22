@@ -287,6 +287,14 @@ internal fun BureauFloorOverview(
                         ink = KaiInk,
                     )
                     SoftBadge(
+                        label = when (ui.chairSprite) {
+                            CHAIR_SPRITE_OAK -> "Desk chairs · Oakwood"
+                            else -> "Desk chairs · Ergonomic"
+                        },
+                        face = KaiButter,
+                        ink = KaiInk,
+                    )
+                    SoftBadge(
                         label = when (ui.confStyle) {
                             CONF_STYLE_OAK -> "Conference · Dream Starter"
                             else -> "Conference · Premium Startup"
@@ -942,7 +950,7 @@ private fun InventoryGrid(
     val deskName = if (ui.deskSprite == DESK_SPRITE_OAK) "Dream Starter" else "Premium desk"
     val confName = if (ui.confStyle == CONF_STYLE_OAK) "Dream Starter - Oakwood simple" else "Premium Startup"
     val confThumb = if (ui.confStyle == CONF_STYLE_OAK) R.drawable.shop_thumb_oak_conference else R.drawable.shop_thumb_premium_conference
-    val entries = remember(ui.deskSprite, ui.confStyle, ownedRows) {
+    val entries = remember(ui.deskSprite, ui.chairSprite, ui.confStyle, ownedRows) {
         val built = OfficeMap.builtInInventory().mapNotNull { (kind, n) ->
             // The only map "plant" is the conference corner pot, and Premium Startup does not show it.
             val count = if (ui.confStyle != CONF_STYLE_OAK && kind == "plant") {
@@ -955,6 +963,7 @@ private fun InventoryGrid(
                 key = "b:$kind",
                 title = when (kind) {
                     "desk" -> deskName
+                    "chair" -> if (ui.chairSprite == CHAIR_SPRITE_OAK) "Desk chairs · Oakwood" else "Desk chairs · Ergonomic"
                     "conf_room" -> confName
                     else -> builtInLabel(kind, deskName)
                 },
@@ -964,6 +973,7 @@ private fun InventoryGrid(
                 thumbKey = when (kind) {
                     "conf_room" -> null
                     "desk" -> "props/${ui.deskSprite}"
+                    "chair" -> "props/${ui.chairSprite}"
                     else -> "props/$kind"
                 },
                 thumbRes = if (kind == "conf_room") confThumb else null,

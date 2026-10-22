@@ -1,11 +1,12 @@
 # Run from repo root: python3 scripts/gen_desk_oak.py  (needs numpy, scipy, Pillow)
-"""Oakwood / Dream-starter desk map art.
+"""Retired. Dream Starter desk art is the supplied illustration.
 
-Builds media/sprites/props/desk_oak.png from desk_bare + mug, then paints a
-generic grey/beige PC laptop (no MacBook notch, dock, menu bar, or Apple chin).
-Startup Premium keeps media/sprites/props/desk.png untouched.
-Also refreshes app/src/main/res/drawable-nodpi/shop_thumb_oakwood_desk.png.
+media/sprites/props/desk_oak.png and shop_thumb_oakwood_desk.png are that
+picture, magenta-keyed. Running the old generator would overwrite them.
+Startup Premium stays media/sprites/props/desk.png.
 """
+import sys
+sys.exit("desk_oak.png is the Dream Starter illustration; this generator is retired")
 import numpy as np
 from PIL import Image
 from scipy import ndimage as nd
@@ -38,45 +39,14 @@ def top_y(x):
 RX0, RX1, RY0, RY1 = 290, 628, 200, 548
 region = np.zeros((H, W), bool)
 region[RY0:RY1, RX0:RX1] = True
-src = out.copy()
-dark = src.sum(axis=2) < 200
+# ---- back edge rebuild (unchanged geometry)
 for x in range(RX0, RX1):
     t = top_y(x)
     out[RY0:t, x] = [255, 0, 255]
     out[t:t + 11, x] = OUTL
-bk = keymask(out)
-front_dark = dark.copy()
-for x in range(RX0, RX1):
-    front_dark[:top_y(x) + 30, x] = False
-near = nd.binary_dilation(front_dark, iterations=3)
 
-
-def woodok(y, x):
-    return 0 <= y < H and 0 <= x < W and not region[y, x] and not bk[y, x] and not dark[y, x]
-
-
-miss = 0
-cnt = 0
-for x in range(RX0, RX1):
-    for y in range(top_y(x) + 11, RY1):
-        if near[y, x] or front_dark[y, x] or bk[y, x]:
-            continue
-        cnt += 1
-        done = False
-        for k in range(1, 80):
-            for sx, sy in ((-10, 5), (10, -5)):
-                yy, xx = y + sy * k, x + sx * k
-                if woodok(yy, xx):
-                    out[y, x] = src[yy, xx]
-                    done = True
-                    break
-            if done:
-                break
-        if not done:
-            miss += 1
-print('inpaint px', cnt, 'miss', miss)
-
-# ---- paste laptop + mug from the premium desk, then morph laptop → generic PC
+# ---- extract laptop + mug mask first (same code, moved up: the wood fill
+# ---- skips pixels the paste will cover)
 x0, y0, x1, y1 = 350, 140, 720, 520
 reg = desk[y0:y1, x0:x1].copy()
 r, g, b = reg[..., 0], reg[..., 1], reg[..., 2]
@@ -94,6 +64,66 @@ white = (r > 200) & (g > 200) & (b > 200) & ~mag
 m |= white
 lap = (lab == 1) | (white & nd.binary_dilation(lab == 1, iterations=2))
 print('comps', len(big), [int(s) for s in sizes if s > 1500])
+
+dx, dy = -80, 50
+paste = np.zeros((H, W), bool)
+pys, pxs = np.nonzero(m)
+paste[pys + y0 + dy, pxs + x0 + dx] = True
+paste_inner = nd.binary_erosion(paste, iterations=3)
+
+# ---- redraw the work-zone wood: local-tone base (wide mean of clean-wood
+# ---- donors, no directional streaks) + crisp 1px procedural grain at the
+# ---- measured 27° grain angle + faint tooth. Seeded: deterministic.
+bk = keymask(out)
+below_edge = np.zeros((H, W), bool)
+for x in range(RX0, RX1):
+    below_edge[top_y(x) + 11:RY1, x] = True
+fill = region & below_edge & ~bk & ~paste_inner
+donor = (
+    (out[..., 0] > out[..., 1]) & (out[..., 1] > out[..., 2])
+    & (out[..., 0] - out[..., 2] > 55) & (out[..., 0] > 140) & (out[..., 1] > 80)
+    & ~bk & ~nd.binary_dilation(region, iterations=25)
+)
+print('donor px', int(donor.sum()))
+w = donor.astype(np.float32)
+num = np.stack([
+    nd.uniform_filter(np.where(donor, out[..., c].astype(np.float32), 0.0), size=401, mode='nearest')
+    for c in range(3)
+], axis=-1)
+den = nd.uniform_filter(w, size=401, mode='nearest')[..., None]
+synth = num / np.maximum(den, 1e-6)
+synth[den[..., 0] < 1e-3] = [229.0, 157.0, 92.0]
+rng = np.random.default_rng(7)
+grain = np.zeros((H, W), bool)
+gx, gy = np.cos(np.radians(27.0)), np.sin(np.radians(27.0))
+streaks = 0
+for _ in range(1500):
+    x = float(rng.integers(RX0, RX1))
+    y = float(rng.integers(RY0, RY1))
+    length = int(rng.integers(20, 90))
+    wob = rng.uniform(-0.05, 0.05)
+    for _ in range(length):
+        xi, yi = int(round(x)), int(round(y))
+        if 0 <= xi < W and 0 <= yi < H and fill[yi, xi]:
+            grain[yi, xi] = True
+            streaks += 1
+        x += gx + wob
+        y += gy + wob * 0.5
+synth[grain] -= [21.0, 28.0, 16.0]
+synth += rng.uniform(-3.0, 3.0, size=synth.shape)
+e1 = nd.binary_erosion(fill, iterations=1)
+e2 = nd.binary_erosion(fill, iterations=2)
+alpha = np.zeros((H, W), np.float32)
+alpha[fill] = 0.34
+alpha[e1] = 0.67
+alpha[e2] = 1.0
+a = alpha[..., None]
+out_f = out.astype(np.float32)
+out_f[fill] = synth[fill] * a[fill] + out_f[fill] * (1 - a[fill])
+out = np.clip(out_f, 0, 255).astype(np.int16)
+print('fill px', int(fill.sum()), 'grain px', streaks)
+
+# ---- morph the extracted laptop → generic PC (unchanged code)
 
 
 def bbox_full(a):
@@ -263,7 +293,6 @@ keys_white = lap & ~glass_full & (yy > bot_y) & (lum > 165) & (chroma < 35)
 reg_f[keys_white] = np.array([140.0, 132.0, 118.0])
 
 reg_out = np.clip(reg_f, 0, 255).astype(np.int16)
-dx, dy = -80, 50
 ys, xs = np.nonzero(m)
 out[ys + y0 + dy, xs + x0 + dx] = reg_out[ys, xs]
 

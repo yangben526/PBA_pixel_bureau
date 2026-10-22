@@ -28,7 +28,7 @@ class SpriteStore(private val context: Context) {
         if (ready) {
             return@withContext
         }
-        val cacheDir = File(context.filesDir, "sprites-v54").apply { mkdirs() }
+        val cacheDir = File(context.filesDir, "sprites-v55").apply { mkdirs() }
         for (name in names) {
             val cache = File(cacheDir, name.replace('/', '_') + ".png")
             val bitmap = if (cache.exists()) {
@@ -93,7 +93,7 @@ class SpriteStore(private val context: Context) {
          * prop added here is listed in Pazada automatically.
          */
         val propNames: List<String> = listOf(
-            "beanbag", "bike", "bookshelf", "chair", "coffee", "desk", "desk_bare", "desk_top",
+            "beanbag", "bike", "bookshelf", "chair", "chair_oak", "coffee", "desk", "desk_bare", "desk_top",
             "foosball", "fridge", "fridge_open", "plant", "plant2", "plant_top", "server", "server_fan", "sofa",
             "trash", "watercooler", "whiteboard",
             // v0.1.61 Pazada stock (scripts/gen_pazada_props.py) + oak desk map variant.
@@ -103,9 +103,10 @@ class SpriteStore(private val context: Context) {
 
         /**
          * State/layer art for another prop (not a standalone shop item).
-         * desk_oak is the map art for the owned Oakwood desk (office_desk → desk_bare listing).
+         * desk_oak swaps the work desks. chair_oak swaps the desk chairs.
+         * Neither is its own floor prop.
          */
-        val propLayers: Set<String> = setOf("fridge_open", "server_fan", "desk_oak")
+        val propLayers: Set<String> = setOf("fridge_open", "server_fan", "desk_oak", "chair_oak")
 
         val names: List<String> = buildList {
             val people = listOf("byte", "cursor", "hugo", "kai", "leif", "luna", "mina", "nico", "nola", "ops", "otto", "pixel", "reid", "sora", "vera", "you", "kenji", "sari", "diego", "june", "pax", "ivo", "ames", "cleo", "ryo", "yuki", "minjun", "wei", "sakura", "jia", "haruto", "soojin", "chen", "hana", "bo", "ren", "lin")

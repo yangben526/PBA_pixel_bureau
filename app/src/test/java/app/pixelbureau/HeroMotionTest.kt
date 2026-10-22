@@ -2,6 +2,7 @@ package app.pixelbureau
 
 import app.pixelbureau.logic.HeroCityLoopMs
 import app.pixelbureau.logic.HeroCloudLoopMs
+import app.pixelbureau.logic.heroTileLayout
 import app.pixelbureau.logic.heroTileShift
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -30,5 +31,27 @@ class HeroMotionTest {
     @Test
     fun cloudsLoopFasterThanCity() {
         assertTrue(HeroCloudLoopMs < HeroCityLoopMs)
+    }
+
+    @Test
+    fun tileCopiesAbutExactlyAndCoverCanvas() {
+        for (dstW in intArrayOf(1086, 1000, 999, 2172)) {
+            var shift = 0
+            while (shift < 2172) {
+                val layout = heroTileLayout(shift, 2172, dstW)
+                assertEquals(layout.secondX, layout.firstX + layout.firstW)
+                assertTrue(layout.firstX <= 0)
+                assertTrue(layout.secondX + layout.secondW >= dstW)
+                assertTrue(layout.firstW > 0)
+                shift += 7
+            }
+        }
+    }
+
+    @Test
+    fun tileLayoutAtRestStartsFlush() {
+        val layout = heroTileLayout(0, 2172, 1086)
+        assertEquals(0, layout.secondX)
+        assertEquals(-1086, layout.firstX)
     }
 }

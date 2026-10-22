@@ -2,6 +2,11 @@ package app.pixelbureau.ui
 
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -25,15 +30,14 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
@@ -48,9 +52,15 @@ import app.pixelbureau.logic.TaskforceStatus
 import app.pixelbureau.logic.displayTitle
 import app.pixelbureau.logic.spriteFrame
 import app.pixelbureau.sprites.SpriteStore
-import kotlinx.coroutines.delay
+import kotlin.math.sin
 
 private enum class AgentFilter(val label: String) { All("All"), Working("Working"), Idle("Idle"), Meeting("Taskforce") }
+
+/** 0 at rest, 1 at the top of a two-step idle bob. [salt] keeps neighbors out of sync. */
+internal fun floorIdleLift(phase: Float, salt: Int): Float {
+    val t = (phase + (salt and 0xff) / 255f) % 1f
+    return if (sin(t * 6.2831855f) > 0.15f) 1f else 0f
+}
 
 private data class AgentState(val label: String, val dot: Color, val filter: AgentFilter)
 
@@ -83,6 +93,16 @@ internal fun FloorAgentsGrid(
     var detail by remember { mutableStateOf<String?>(null) }
     val states = active.associate { it.id to agentState(it, it.id in tfMembers) }
     val shown = active.filter { filter == AgentFilter.All || states[it.id]?.filter == filter }
+    val idle = rememberInfiniteTransition(label = "floorIdle")
+    val idlePhase by idle.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1100, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "floorIdlePhase",
+    )
     Column(
         Modifier.fillMaxWidth().animateContentSize(tween(200, easing = FastOutSlowInEasing)),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -121,7 +141,9 @@ internal fun FloorAgentsGrid(
             val rows = shown.chunked(AGENT_COLS)
             for (row in if (expanded) rows else rows.take(2)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    for (a in row) AgentTileSmall(a, states.getValue(a.id), sprites, Modifier.weight(1f)) { detail = a.id }
+                    for (a in row) {
+                        AgentTileSmall(a, states.getValue(a.id), sprites, idlePhase, Modifier.weight(1f)) { detail = a.id }
+                    }
                     repeat(AGENT_COLS - row.size) { Spacer(Modifier.weight(1f)) }
                 }
             }
@@ -137,7 +159,7 @@ internal fun FloorAgentsGrid(
     }
     val open = detail?.let { id -> active.firstOrNull { it.id == id } }
     if (open != null) {
-        AgentDetailDialog(ui, open, states.getValue(open.id), done[open.id] ?: 0, sprites,
+        AgentDetailDialog(ui, open, states.getValue(open.id), done[open.id] ?: 0, sprites, idlePhase,
             onDismiss = { detail = null },
             onChat = { detail = null; onChat(open.id) },
             onOpenHr = { detail = null; onOpenHr(open.id) })
@@ -157,7 +179,14 @@ private fun AgStat(label: String, value: Int, face: Color, modifier: Modifier) {
 }
 
 @Composable
-private fun AgentTileSmall(agent: Agent, st: AgentState, sprites: SpriteStore, modifier: Modifier, onClick: () -> Unit) {
+private fun AgentTileSmall(
+    agent: Agent,
+    st: AgentState,
+    sprites: SpriteStore,
+    idlePhase: Float,
+    modifier: Modifier,
+    onClick: () -> Unit,
+) {
     Column(
         modifier.clip(RoundedCornerShape(10.dp)).background(KaiCardNest)
             .border(1.5.dp, KaiBorder, RoundedCornerShape(10.dp)).clickable(onClick = onClick).padding(3.dp),
@@ -171,7 +200,16 @@ private fun AgentTileSmall(agent: Agent, st: AgentState, sprites: SpriteStore, m
             if (bmp != null) {
                 // Share of the tile, not a fixed dp, so tablets and large phones
                 // keep the same portrait proportion as a normal phone (~40dp there).
-                Image(bmp.asImageBitmap(), agent.name, Modifier.fillMaxSize(0.58f), contentScale = ContentScale.Fit, filterQuality = FilterQuality.None)
+                val lift = floorIdleLift(idlePhase, agent.id.hashCode())
+                Image(
+                    bmp.asImageBitmap(),
+                    agent.name,
+                    Modifier
+                        .fillMaxSize(0.58f)
+                        .graphicsLayer { translationY = -lift * 2.dp.toPx() },
+                    contentScale = ContentScale.Fit,
+                    filterQuality = FilterQuality.None,
+                )
             } else {
                 Text(agent.name.take(1), color = KaiInk, fontWeight = FontWeight.Bold)
             }
@@ -192,12 +230,11 @@ private fun AgentDetailDialog(
     st: AgentState,
     done: Int,
     sprites: SpriteStore,
+    idlePhase: Float,
     onDismiss: () -> Unit,
     onChat: () -> Unit,
     onOpenHr: () -> Unit,
 ) {
-    var frame by remember { mutableIntStateOf(0) }
-    LaunchedEffect(agent.id) { while (true) { delay(260); frame = (frame + 1) % 4 } }
     val tfs = ui.taskforces.filter { TaskforceStatus.isOpen(it.data.status) && agent.id in it.memberIds }
     val bound = ui.models.firstOrNull { it.id == ui.agentModelIds[agent.id] }
     val llm = bound?.displayTitle() ?: ui.models.firstOrNull { it.id == ui.activeModelId }?.let { "Default · ${it.displayTitle()}" }
@@ -222,8 +259,17 @@ private fun AgentDetailDialog(
                     Modifier.size(96.dp).clip(RoundedCornerShape(14.dp)).background(KaiSky).border(2.dp, KaiBorder, RoundedCornerShape(14.dp)),
                     contentAlignment = Alignment.Center,
                 ) {
-                    val bmp = sprites.get(spriteFrame(agent.spriteKey, "idle", frame)) ?: sprites.get(spriteFrame(agent.spriteKey, "idle", 0))
-                    if (bmp != null) Image(bmp.asImageBitmap(), agent.name, Modifier.size(84.dp), contentScale = ContentScale.Fit, filterQuality = FilterQuality.None)
+                    val bmp = sprites.get(spriteFrame(agent.spriteKey, "idle", 0))
+                    if (bmp != null) {
+                        val lift = floorIdleLift(idlePhase, agent.id.hashCode())
+                        Image(
+                            bmp.asImageBitmap(),
+                            agent.name,
+                            Modifier.size(84.dp).graphicsLayer { translationY = -lift * 3.dp.toPx() },
+                            contentScale = ContentScale.Fit,
+                            filterQuality = FilterQuality.None,
+                        )
+                    }
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Text(agent.name, color = KaiInk, fontWeight = FontWeight.Bold, fontSize = 20.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)

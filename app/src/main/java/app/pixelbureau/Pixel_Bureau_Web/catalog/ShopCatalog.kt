@@ -37,8 +37,9 @@ import app.pixelbureau.sprites.SpriteStore
  * (KEY_OWNED_ITEMS). Every purchase outside an exclusive group gets its own
  * map cell via logic/MapPlacement (stored in SettingsStore KEY_SHOP_PLACEMENTS);
  * buying is refused before any star is spent when the floor has no valid room.
- * The desk group swaps the art of the eight work desks. The conference group
- * swaps the glass room for the oakwood room (or back). Neither adds a prop.
+ * The desk group swaps the art of the eight work desks. The chair group swaps
+ * the desk chairs (ergonomic mesh or oak). The conference group swaps the
+ * glass room for the oakwood room (or back). None of these add a prop.
  */
 internal enum class ShopStore(val label: String) {
     Pazada("Pazada"),
@@ -106,6 +107,9 @@ internal object ShopCatalog {
     /** Exclusivity group: only one desk type owned at a time (office_desk ⇄ premium_desk). */
     const val GROUP_DESK = "desk"
 
+    /** Exclusivity group: desk-chair art, ergonomic mesh or oak (ergo_chair ⇄ oak_chair). */
+    const val GROUP_CHAIR = "chair"
+
     /** Exclusivity group: only one conference-room style at a time. */
     const val GROUP_CONF = "conference"
 
@@ -113,7 +117,8 @@ internal object ShopCatalog {
     val curated: List<ShopItem> = listOf(
         // ── Featured ──────────────────────────────────────────────────────
         ShopItem("office_desk", "Dream starter - Oakwood simple", "A reliable oak desk, laptop and mug included.", 3, ShopCategory.Furniture, propKey = "desk_bare", featured = true, thumbRes = R.drawable.shop_thumb_oakwood_desk, exclusiveGroup = GROUP_DESK),
-        ShopItem("ergo_chair", "Ergonomic Chair", "Keep your team comfortable.", 2, ShopCategory.Furniture, propKey = "chair", featured = true),
+        ShopItem("ergo_chair", "Ergonomic Chair", "Mesh chair at every desk. Replaces Oakwood.", 2, ShopCategory.Furniture, propKey = "chair", featured = true, exclusiveGroup = GROUP_CHAIR),
+        ShopItem("oak_chair", "Oakwood Chair", "Plain oak chair at every desk. Replaces the ergonomic chair.", 1, ShopCategory.Furniture, propKey = "chair_oak", exclusiveGroup = GROUP_CHAIR),
         ShopItem("indoor_plant", "Indoor Plant", "A touch of green for productivity.", 1, ShopCategory.Plants, propKey = "plant", featured = true),
         ShopItem("coffee_machine", "Coffee Station", "Great ideas start here.", 3, ShopCategory.Pantry, propKey = "coffee", featured = true),
         ShopItem("aquarium", "Office Aquarium", "Three fish, zero meetings.", 4, ShopCategory.Decor, propKey = "aquarium", featured = true),

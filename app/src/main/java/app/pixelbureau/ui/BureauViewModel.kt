@@ -50,7 +50,11 @@ import app.pixelbureau.logic.TaskforceRules
 import app.pixelbureau.data.TaskforceMessage
 import app.pixelbureau.data.Taskforce
 import app.pixelbureau.logic.AgentTool
+import app.pixelbureau.logic.HirePosting
 import app.pixelbureau.logic.OfficeMap
+import app.pixelbureau.logic.deliverHireBatch
+import app.pixelbureau.logic.hirePostingWithout
+import app.pixelbureau.logic.postHireJob
 import app.pixelbureau.logic.Cell
 import kotlinx.coroutines.flow.combine
 import java.util.UUID
@@ -124,6 +128,8 @@ data class BureauUi(
     val placedProps: List<PlacedProp> = emptyList(),
     /** Sprite the eight work desks use: "desk" (default / Startup Premium) or "desk_oak" (Oakwood). */
     val deskSprite: String = DESK_SPRITE_DEFAULT,
+    /** Sprite the desk chairs use: "chair" (ergonomic) or "chair_oak" (Oakwood). */
+    val chairSprite: String = CHAIR_SPRITE_DEFAULT,
     /** Conference room finish: "premium" (glass) or "oak" (Dream Starter boards). */
     val confStyle: String = CONF_STYLE_PREMIUM,
     /** Open taskforces (not signed off / disbanded), oldest first. */
@@ -137,6 +143,14 @@ data class BureauUi(
     val taskforceSpeaking: Map<String, Set<String>> = emptyMap(),
     /** Conference room tapped: highlight it and show the "Set a meeting" dialog. */
     val meetingDialogOpen: Boolean = false,
+    /** The open AgentHire job, including the names HR brought back. */
+    val hirePosting: HirePosting = HirePosting(),
+    /** HR's next-day line is on screen. */
+    val hireDialogOpen: Boolean = false,
+    /** Company tab should open AgentHire once. Set by the HR dialog. */
+    val openPixelHire: Boolean = false,
+    /** HR headcount just opened an empty desk. Prompt to hire in AgentHire. */
+    val deskOpenedPrompt: Boolean = false,
     /** taskforceId → (agentId → reason) for model errors waiting on Retry / Skip. */
     val taskforceFailures: Map<String, Map<String, String>> = emptyMap(),
     /** taskforceId → (round, rounds) while agents debate. */
@@ -147,6 +161,13 @@ data class BureauUi(
 
 internal const val DESK_SPRITE_DEFAULT = "desk"
 internal const val DESK_SPRITE_OAK = "desk_oak"
+
+internal const val CHAIR_SPRITE_DEFAULT = "chair"
+internal const val CHAIR_SPRITE_OAK = "chair_oak"
+
+/** Owned chair-group item → desk chair art. Nothing owned keeps the ergonomic chair. */
+internal fun chairSpriteFor(owned: Map<String, Int>): String =
+    if ((owned["oak_chair"] ?: 0) > 0 && (owned["ergo_chair"] ?: 0) <= 0) CHAIR_SPRITE_OAK else CHAIR_SPRITE_DEFAULT
 
 internal const val CONF_STYLE_PREMIUM = "premium"
 internal const val CONF_STYLE_OAK = "oak"
@@ -238,7 +259,17 @@ class BureauViewModel(app: Application) : AndroidViewModel(app) {
     private var messageJob: Job? = null
     private var watchingId: String? = null
 
-    private val _ui = MutableStateFlow(BureauUi())
+    private var rosterReady = false
+
+    private val _ui = MutableStateFlow(
+        run {
+            val posting = container.settings.readHirePosting()
+            BureauUi(
+                hirePosting = posting,
+                hireDialogOpen = posting.names.isNotEmpty() && !posting.seen,
+            )
+        },
+    )
     val ui: StateFlow<BureauUi> = _ui
 
     private val _office = MutableStateFlow(OfficeSnapshot(emptyList()))
@@ -288,6 +319,7 @@ class BureauViewModel(app: Application) : AndroidViewModel(app) {
             }
             repository.observeBureau().collect { bureau ->
                 _ui.update { it.copy(bureau = bureau) }
+                syncHirePosting(bureau?.day ?: 1)
             }
         }
         viewModelScope.launch {
@@ -298,6 +330,8 @@ class BureauViewModel(app: Application) : AndroidViewModel(app) {
                     val next = if (stillHere) selected else agents.firstOrNull { !it.archived }?.id
                     state.copy(agents = agents, selectedId = next)
                 }
+                rosterReady = true
+                syncHirePosting(_ui.value.bureau?.day ?: 1)
                 val selected = _ui.value.selectedId
                 if (selected != watchingId) {
                     watchMessages(selected)
@@ -416,15 +450,63 @@ class BureauViewModel(app: Application) : AndroidViewModel(app) {
         _ui.update { it.copy(draft = value) }
     }
 
-    fun openHiringSlot() {
+    /** AgentHire: ask HR to look. The group arrives on the next bureau day. */
+    fun postJob() {
+        val day = _ui.value.bureau?.day ?: return
+        val next = postHireJob(day)
+        container.settings.writeHirePosting(next)
+        _ui.update { it.copy(hirePosting = next, hireDialogOpen = false) }
+    }
+
+    /** The next-day HR line. [openPage] asks Company to show AgentHire. */
+    fun dismissHireArrival(openPage: Boolean) {
+        val next = _ui.value.hirePosting.copy(seen = true)
+        container.settings.writeHirePosting(next)
+        _ui.update {
+            it.copy(
+                hirePosting = next,
+                hireDialogOpen = false,
+                openPixelHire = openPage || it.openPixelHire,
+            )
+        }
+    }
+
+    fun consumeOpenPixelHire() {
+        _ui.update { it.copy(openPixelHire = false) }
+    }
+
+    /**
+     * Roll the posted job once the roster is loaded and the bureau day has
+     * moved on. A delivered group is left as it was saved.
+     */
+    private fun syncHirePosting(day: Int) {
+        if (!rosterReady) return
+        val avoid = _ui.value.agents.filter { !it.archived }.map { it.name }.toSet()
+        val before = container.settings.readHirePosting()
+        val next = deliverHireBatch(before, day, Random.Default, avoid)
+        if (next != before) container.settings.writeHirePosting(next)
+        _ui.update { it.copy(hirePosting = next, hireDialogOpen = next.names.isNotEmpty() && !next.seen) }
+    }
+
+    /**
+     * Spend ★1 to open an empty desk. Nobody is hired.
+     * [promptHire] is the HR headcount control: ask the user to hire in AgentHire.
+     */
+    fun openHiringSlot(promptHire: Boolean = false) {
         viewModelScope.launch {
             val error = repository.openHiringSlot()
             if (error != null) {
                 showBanner(error)
+            } else if (promptHire) {
+                _ui.update { it.copy(deskOpenedPrompt = true) }
             } else {
                 showBanner("Desk opened · ★−1")
             }
         }
+    }
+
+    fun dismissDeskPrompt() {
+        _ui.update { it.copy(deskOpenedPrompt = false) }
     }
 
     /**
@@ -452,6 +534,7 @@ class BureauViewModel(app: Application) : AndroidViewModel(app) {
                 ownedItems = owned,
                 placedProps = all,
                 deskSprite = deskSpriteFor(owned),
+                chairSprite = chairSpriteFor(owned),
                 confStyle = confStyleFor(owned),
             )
         }
@@ -473,8 +556,8 @@ class BureauViewModel(app: Application) : AndroidViewModel(app) {
     /**
      * Pazada / Pamazon / Pmart Buy. Items outside an exclusive group need a free
      * map cell first: no room → refuse before any star is spent. Then spend
-     * stars, record the item and pin the new copy to its cell. Desk-group items
-     * swap the desk art. Conference-group items swap the room finish.
+     * stars, record the item and pin the new copy to its cell. Desk, chair, and
+     * conference groups swap built-in art and do not take a map cell.
      */
     fun buyShopItem(itemId: String, itemName: String, cost: Int) {
         viewModelScope.launch {
@@ -549,6 +632,9 @@ class BureauViewModel(app: Application) : AndroidViewModel(app) {
             if (error != null) {
                 showBanner(error)
             } else {
+                val next = hirePostingWithout(_ui.value.hirePosting, name)
+                container.settings.writeHirePosting(next)
+                _ui.update { it.copy(hirePosting = next) }
                 showBanner("$name joined the bureau!")
             }
         }

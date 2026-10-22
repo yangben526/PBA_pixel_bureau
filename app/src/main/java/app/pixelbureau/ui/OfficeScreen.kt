@@ -1470,6 +1470,7 @@ private fun OfficeViewport(model: BureauViewModel, modifier: Modifier) {
         modifier = modifier,
         placed = ui.placedProps,
         deskSprite = ui.deskSprite,
+        chairSprite = ui.chairSprite,
         confStyle = ui.confStyle,
         onTapRoom = {
             val open = ui.taskforces.firstOrNull { app.pixelbureau.logic.TaskforceStatus.isOpen(it.data.status) }

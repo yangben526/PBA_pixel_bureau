@@ -44,6 +44,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -70,6 +71,7 @@ private val TabLabelActive = Color(0xFFE2A23A)
 
 @Composable
 fun BureauApp(model: BureauViewModel) {
+    val ui by model.ui.collectAsStateWithLifecycle()
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var openBureau by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
     // Do not use WindowInsets.isImeVisible. On targetSdk 35 it stays true on some
@@ -110,6 +112,16 @@ fun BureauApp(model: BureauViewModel) {
             1 -> RosterScreen(model, contentModifier, onOpenOffice = { tab = 0 }, startOnBureau = openBureau.also { openBureau = false })
             else -> SettingsScreen(model, contentModifier)
         }
+    }
+    if (ui.hireDialogOpen && ui.hirePosting.names.isNotEmpty()) {
+        HireArrivalDialog(
+            count = ui.hirePosting.names.size,
+            onDismiss = { model.dismissHireArrival(openPage = false) },
+            onSee = {
+                model.dismissHireArrival(openPage = true)
+                tab = 1
+            },
+        )
     }
 }
 

@@ -14,6 +14,9 @@ import app.pixelbureau.ui.CONF_STYLE_OAK
 import app.pixelbureau.ui.CONF_STYLE_PREMIUM
 import app.pixelbureau.ui.actorSortDepth
 import app.pixelbureau.ui.confChairSortDepth
+import app.pixelbureau.ui.CHAIR_SPRITE_DEFAULT
+import app.pixelbureau.ui.CHAIR_SPRITE_OAK
+import app.pixelbureau.ui.chairSpriteFor
 import app.pixelbureau.ui.confStyleFor
 import app.pixelbureau.ui.placeableCopies
 import org.junit.Assert.assertEquals
@@ -130,6 +133,30 @@ class ConferenceRoomTest {
         // With everyone gone the door settles shut again.
         repeat(100) { sim.tick(0.1f, emptyList()) }
         assertEquals(0f, sim.confDoorOpen(), 0.001f)
+    }
+
+    @Test
+    fun oakwoodChairReplacesTheErgonomicChair() {
+        val oak = ShopCatalog.byId("oak_chair")
+        val ergo = ShopCatalog.byId("ergo_chair")
+        assertNotNull(oak)
+        assertNotNull(ergo)
+        assertEquals("Oakwood Chair", oak!!.name)
+        assertEquals(1, oak.price)
+        assertEquals(1, oak.salePrice)
+        assertEquals(ShopCategory.Furniture, oak.category)
+        assertEquals(ShopStore.Pazada, oak.store)
+        assertEquals(ShopCatalog.GROUP_CHAIR, oak.exclusiveGroup)
+        assertEquals(ShopCatalog.GROUP_CHAIR, ergo!!.exclusiveGroup)
+        assertEquals(listOf("ergo_chair"), ShopCatalog.exclusiveRivals("oak_chair").map { it.id })
+        assertEquals(listOf("oak_chair"), ShopCatalog.exclusiveRivals("ergo_chair").map { it.id })
+        assertFalse(ShopCatalog.mapPropKeys.contains("chair_oak"))
+        assertTrue(placeableCopies(mapOf("oak_chair" to 1)).isEmpty())
+        assertTrue(placeableCopies(mapOf("ergo_chair" to 1)).isEmpty())
+        assertEquals(CHAIR_SPRITE_DEFAULT, chairSpriteFor(emptyMap()))
+        assertEquals(CHAIR_SPRITE_OAK, chairSpriteFor(mapOf("oak_chair" to 1)))
+        assertEquals(CHAIR_SPRITE_DEFAULT, chairSpriteFor(mapOf("ergo_chair" to 1)))
+        assertEquals(CHAIR_SPRITE_DEFAULT, chairSpriteFor(mapOf("oak_chair" to 1, "ergo_chair" to 1)))
     }
 
     @Test

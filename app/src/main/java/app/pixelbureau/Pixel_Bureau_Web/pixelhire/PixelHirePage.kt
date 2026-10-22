@@ -46,7 +46,6 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.asImageBitmap
@@ -72,8 +71,42 @@ import app.pixelbureau.ui.*
 import app.pixelbureau.logic.HireCandidate
 import app.pixelbureau.logic.HireRoleAll
 import app.pixelbureau.logic.HireRoleGeneral
+import app.pixelbureau.logic.AgentHireActLoopMs
+import app.pixelbureau.logic.AgentHireBobLoopMs
+import app.pixelbureau.logic.AgentHireCard1Left
+import app.pixelbureau.logic.AgentHireCard1Top
+import app.pixelbureau.logic.AgentHireCard2Left
+import app.pixelbureau.logic.AgentHireCard2Top
+import app.pixelbureau.logic.AgentHireCard3Left
+import app.pixelbureau.logic.AgentHireCard3Top
+import app.pixelbureau.logic.AgentHireCloudArtW
+import app.pixelbureau.logic.AgentHireCloudLoopMs
+import app.pixelbureau.logic.AgentHireGreeterLeft
+import app.pixelbureau.logic.AgentHireGreeterTop
+import app.pixelbureau.logic.AgentHireHandLeft
+import app.pixelbureau.logic.AgentHireHandTop
+import app.pixelbureau.logic.AgentHireHireBottom
+import app.pixelbureau.logic.AgentHireHireLeft
+import app.pixelbureau.logic.AgentHireLidLLeft
+import app.pixelbureau.logic.AgentHireLidLTop
+import app.pixelbureau.logic.AgentHireLidRLeft
+import app.pixelbureau.logic.AgentHireLidRTop
+import app.pixelbureau.logic.AgentHireLogoLeft
+import app.pixelbureau.logic.AgentHireLogoLoopMs
+import app.pixelbureau.logic.AgentHireLogoTop
+import app.pixelbureau.logic.AgentHireSteamLoopMs
+import app.pixelbureau.logic.AgentHireSteamTop
+import app.pixelbureau.logic.AgentHireSteamX
+import app.pixelbureau.logic.AgentHireTitleLoopMs
+import app.pixelbureau.logic.agentHireBlink
+import app.pixelbureau.logic.agentHireBob
+import app.pixelbureau.logic.agentHireCloudWrap
+import app.pixelbureau.logic.agentHireHandPose
+import app.pixelbureau.logic.agentHireLogo
+import app.pixelbureau.logic.agentHireSteam
 import app.pixelbureau.logic.agentHireTitleScale
-import app.pixelbureau.logic.candidatesForRole
+import app.pixelbureau.logic.heroTileLayout
+import app.pixelbureau.logic.candidatesNamed
 import app.pixelbureau.logic.hireRoleFilters
 import app.pixelbureau.logic.OfficeMap
 import app.pixelbureau.logic.hiredLook
@@ -143,8 +176,9 @@ private val roleIconRes = mapOf(
 )
 
 /**
- * Soft Kairosoft hire desk: search, role chips, then open a slot and hire
- * from the candidate pool. A hire still needs a free desk and uses [hiredLook].
+ * Soft Kairosoft hire desk. Post a job, then the next bureau day HR brings
+ * back 3–6 people from a mix of roles. Role chips filter that group.
+ * All Roles is the opening chip. A hire still needs a free desk and uses [hiredLook].
  */
 @Composable
 internal fun PixelHirePage(
@@ -155,16 +189,20 @@ internal fun PixelHirePage(
     val active = ui.agents.count { !it.archived }
     val cap = ui.bureau?.headcount ?: 1
     val stars = ui.bureau?.reputation ?: 0
+    val day = ui.bureau?.day
     val free = (cap - active).coerceAtLeast(0)
     val canOpen = cap < OfficeMap.deskCount && stars >= 1
     val canHire = free > 0
+    val posting = ui.hirePosting
+    val waitingOnHr = posting.postedDay > 0 && !posting.delivered
 
     var query by remember { mutableStateOf("") }
-    var role by remember { mutableStateOf("Finance") }
-    var hired by remember { mutableStateOf(setOf<String>()) }
+    var role by remember { mutableStateOf(HireRoleAll) }
     var deck by remember { mutableStateOf(0) }
     var reading by remember { mutableStateOf<String?>(null) }
-    val waiting = candidatesForRole(role).filter { it.name !in hired && it.matches(query, role) }
+    val rosterNames = ui.agents.filter { !it.archived }.map { it.name }.toSet()
+    val batch = candidatesNamed(posting.names).filter { it.name !in rosterNames }
+    val waiting = batch.filter { it.matches(query, role) }
     val sections = if (role == HireRoleAll) {
         val order = listOf(HireRoleGeneral) + hireRoleFilters.filter { it != HireRoleAll }
         order.mapNotNull { label ->
@@ -198,10 +236,7 @@ internal fun PixelHirePage(
                 BitmapFactory.decodeResource(context.resources, resId)
             }
         }
-        val banner = remember(context) {
-            BitmapFactory.decodeResource(context.resources, R.drawable.agent_hire_banner).asImageBitmap()
-        }
-        AgentHireBanner(bitmap = banner)
+        AgentHireBanner()
 
         WebSearchField(query, "Search for skills, roles, or keywords...") { query = it }
 
@@ -239,6 +274,50 @@ internal fun PixelHirePage(
         HirePanel(
             wash = Color(0xFFF4F8FC),
             number = "1",
+            numberFace = StepBlue,
+            title = "Post a job",
+        ) {
+            Text(
+                when {
+                    waitingOnHr ->
+                        "Posted on day ${posting.postedDay}. HR is out recruiting. Candidates arrive on day ${posting.postedDay + 1}."
+                    posting.delivered && batch.isEmpty() ->
+                        "This batch has joined the bureau. Post another job and a new group arrives the next day."
+                    posting.delivered ->
+                        "This list is the group HR brought back. Post another job to start a new search. The current list clears, and a new group arrives the next day."
+                    else ->
+                        "Post a job. A day later, HR brings back 3 to 6 candidates from a mix of roles."
+                },
+                color = KaiInkMuted,
+                style = MaterialTheme.typography.bodySmall,
+                lineHeight = 16.sp,
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                SoftGameButton(
+                    label = when {
+                        waitingOnHr -> "Waiting · day ${posting.postedDay + 1}"
+                        posting.delivered -> "Post another job"
+                        else -> "Post a job"
+                    },
+                    enabled = day != null && !waitingOnHr,
+                    face = KaiAccent,
+                    highlight = KaiAccentHi,
+                    shadow = KaiAccentLo,
+                    ink = Ink,
+                    onClick = {
+                        deck = 0
+                        reading = null
+                        query = ""
+                        role = HireRoleAll
+                        model.postJob()
+                    },
+                )
+            }
+        }
+
+        HirePanel(
+            wash = Color(0xFFF4F8FC),
+            number = "2",
             numberFace = StepBlue,
             title = "Open a desk",
         ) {
@@ -282,10 +361,11 @@ internal fun PixelHirePage(
 
         HirePanel(
             wash = Color(0xFFFFF7F0),
-            number = "2",
+            number = "3",
             numberFace = StepOrange,
             title = if (role == HireRoleAll) "All Candidates" else "$role Candidates",
-            trailing = {
+            trailing = if (posting.delivered && batch.isNotEmpty()) {
+                {
                 Row(
                     Modifier
                         .clip(RoundedCornerShape(8.dp))
@@ -310,9 +390,12 @@ internal fun PixelHirePage(
                         style = MaterialTheme.typography.labelLarge,
                     )
                 }
+                }
+            } else {
+                null
             },
         ) {
-            if (!canHire) {
+            if (posting.delivered && !canHire) {
                 Text(
                     "No free desk yet. Open one with a star above, or fire someone on the Team list to free a paid slot.",
                     color = KaiInkMuted,
@@ -322,10 +405,17 @@ internal fun PixelHirePage(
             }
             if (waiting.isEmpty()) {
                 Text(
-                    if (query.isBlank()) {
-                        "Everyone in this list is already on the team."
-                    } else {
-                        "No one matches. Try another word, or another role."
+                    when {
+                        posting.postedDay <= 0 ->
+                            "Post a job above. The list fills in a day later."
+                        !posting.delivered ->
+                            "No candidates yet. HR reports back on day ${posting.postedDay + 1}."
+                        batch.isEmpty() ->
+                            "Everyone from this posting is already on the team."
+                        query.isNotBlank() ->
+                            "No one matches. Try another word, or another role."
+                        else ->
+                            "No one in this batch is $role."
                     },
                     color = KaiInkMuted,
                     style = MaterialTheme.typography.bodySmall,
@@ -358,7 +448,6 @@ internal fun PixelHirePage(
                                 candidate.outputPersonality,
                                 candidate.hiredLook(),
                             )
-                            hired = hired + candidate.name
                             if (reading == candidate.name) reading = null
                         },
                     )
@@ -370,79 +459,66 @@ internal fun PixelHirePage(
 
 private const val BannerTwoPi = 6.2831855f
 
-private data class BannerSlice(val image: ImageBitmap, val left: Int, val top: Int) {
-    val width: Int get() = image.width
-    val height: Int get() = image.height
-}
-
 /**
- * Crops [src] to the given rect (bitmap pixels) and fades alpha toward every
- * edge so the slice can drift over the base art without hard seams.
- */
-private fun featheredSlice(
-    src: android.graphics.Bitmap,
-    left: Int,
-    top: Int,
-    right: Int,
-    bottom: Int,
-    featherPx: Float,
-): ImageBitmap {
-    val w = (right - left).coerceAtLeast(1)
-    val h = (bottom - top).coerceAtLeast(1)
-    val out = android.graphics.Bitmap.createBitmap(w, h, android.graphics.Bitmap.Config.ARGB_8888)
-    val canvas = android.graphics.Canvas(out)
-    canvas.drawBitmap(
-        src,
-        android.graphics.Rect(left, top, right, bottom),
-        android.graphics.Rect(0, 0, w, h),
-        null,
-    )
-    val mask = android.graphics.Paint().apply {
-        isAntiAlias = true
-        xfermode = android.graphics.PorterDuffXfermode(android.graphics.PorterDuff.Mode.DST_IN)
-    }
-    val clear = 0x00000000
-    val solid = 0xFF000000.toInt()
-    val fx = (featherPx / w).coerceIn(0f, 0.49f)
-    mask.shader = android.graphics.LinearGradient(
-        0f, 0f, w.toFloat(), 0f,
-        intArrayOf(clear, solid, solid, clear),
-        floatArrayOf(0f, fx, 1f - fx, 1f),
-        android.graphics.Shader.TileMode.CLAMP,
-    )
-    canvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), mask)
-    val fy = (featherPx / h).coerceIn(0f, 0.49f)
-    mask.shader = android.graphics.LinearGradient(
-        0f, 0f, 0f, h.toFloat(),
-        intArrayOf(clear, solid, solid, clear),
-        floatArrayOf(0f, fy, 1f - fy, 1f),
-        android.graphics.Shader.TileMode.CLAMP,
-    )
-    canvas.drawRect(0f, 0f, w.toFloat(), h.toFloat(), mask)
-    return out.asImageBitmap()
-}
-
-/**
- * AgentHire banner with a looped "Hire" animation over the otherwise static
- * original art: same pixels, no recolor, redraw, border, or layout change.
- *
- * The slice rect is bitmap pixels of R.drawable.agent_hire_banner (2000x667),
- * split from "Agent" through clean sky. The word scales anchored at the
- * slice's bottom-center so the bottom rows stay fixed.
+ * AgentHire banner: the original 2000x667 art extracted into loop layers
+ * (see scripts/extract_hire_layers.py). The structural rest frame is
+ * bit-identical to the source banner; over it run ambient loops (card and
+ * greeter bob, wrap-scrolling clouds, laptop glow, coffee steam, "Hire"
+ * breathe) plus a 12s acting timeline for the planted agent: blinks plus
+ * stepped integer hand poses.
  */
 @Composable
-private fun AgentHireBanner(bitmap: ImageBitmap) {
-    val bannerRatio = bitmap.width / bitmap.height.toFloat()
-    val hire = remember(bitmap) {
-        val src = bitmap.asAndroidBitmap()
-        BannerSlice(featheredSlice(src, 706, 128, 1118, 328, 8f), 706, 128)
-    }
+private fun AgentHireBanner() {
+    val context = LocalContext.current
+    val base = remember { decodeHireLayer(context, R.drawable.agent_hire_base) }
+    val clouds = remember { decodeHireLayer(context, R.drawable.agent_hire_clouds) }
+    val card1 = remember { decodeHireLayer(context, R.drawable.agent_hire_card1) }
+    val card2 = remember { decodeHireLayer(context, R.drawable.agent_hire_card2) }
+    val card3 = remember { decodeHireLayer(context, R.drawable.agent_hire_card3) }
+    val greeter = remember { decodeHireLayer(context, R.drawable.agent_hire_greeter) }
+    val hand = remember { decodeHireLayer(context, R.drawable.agent_hire_hand) }
+    val lidL = remember { decodeHireLayer(context, R.drawable.agent_hire_lid_l) }
+    val lidR = remember { decodeHireLayer(context, R.drawable.agent_hire_lid_r) }
+    val logo = remember { decodeHireLayer(context, R.drawable.agent_hire_logo) }
+    val steam = remember { decodeHireLayer(context, R.drawable.agent_hire_steam) }
+    val hire = remember { decodeHireLayer(context, R.drawable.agent_hire_hire) }
+    val bannerRatio = base.width / base.height.toFloat()
     val loop = rememberInfiniteTransition(label = "agentHireBanner")
+    val bobPhase by loop.animateFloat(
+        initialValue = 0f,
+        targetValue = BannerTwoPi,
+        animationSpec = infiniteRepeatable(animation = tween(AgentHireBobLoopMs, easing = LinearEasing)),
+        label = "agentHireBob",
+    )
     val hirePhase by loop.animateFloat(
         initialValue = 0f,
         targetValue = BannerTwoPi,
-        animationSpec = infiniteRepeatable(animation = tween(3400, easing = LinearEasing)),
+        animationSpec = infiniteRepeatable(animation = tween(AgentHireTitleLoopMs, easing = LinearEasing)),
         label = "agentHireWord",
+    )
+    val logoPhase by loop.animateFloat(
+        initialValue = 0f,
+        targetValue = BannerTwoPi,
+        animationSpec = infiniteRepeatable(animation = tween(AgentHireLogoLoopMs, easing = LinearEasing)),
+        label = "agentHireLogo",
+    )
+    val cloudProgress by loop.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(animation = tween(AgentHireCloudLoopMs, easing = LinearEasing)),
+        label = "agentHireCloud",
+    )
+    val actProgress by loop.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(animation = tween(AgentHireActLoopMs, easing = LinearEasing)),
+        label = "agentHireAct",
+    )
+    val steamProgress by loop.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(animation = tween(AgentHireSteamLoopMs, easing = LinearEasing)),
+        label = "agentHireSteam",
     )
     Canvas(
         Modifier
@@ -450,28 +526,135 @@ private fun AgentHireBanner(bitmap: ImageBitmap) {
             .aspectRatio(bannerRatio)
             .semantics { contentDescription = "Agent Hire. Find Amazing Agents. Grow Your Bureau." },
     ) {
-        val scale = size.width / bitmap.width.toFloat()
+        val scale = size.width / base.width.toFloat()
+        val full = IntSize(size.width.roundToInt(), size.height.roundToInt())
         drawImage(
-            bitmap,
+            base,
             dstOffset = IntOffset.Zero,
-            dstSize = IntSize(size.width.roundToInt(), size.height.roundToInt()),
+            dstSize = full,
             filterQuality = FilterQuality.None,
         )
+        val tile = heroTileLayout(agentHireCloudWrap(cloudProgress), AgentHireCloudArtW, full.width)
+        drawImage(
+            clouds,
+            dstOffset = IntOffset(tile.firstX, 0),
+            dstSize = IntSize(tile.firstW.coerceAtLeast(1), full.height),
+            filterQuality = FilterQuality.None,
+        )
+        drawImage(
+            clouds,
+            dstOffset = IntOffset(tile.secondX, 0),
+            dstSize = IntSize(tile.secondW, full.height),
+            filterQuality = FilterQuality.None,
+        )
+        val glow = agentHireLogo(logoPhase)
+        if (glow > 0.005f) {
+            drawImage(
+                logo,
+                dstOffset = IntOffset(
+                    (AgentHireLogoLeft * scale).roundToInt(),
+                    (AgentHireLogoTop * scale).roundToInt(),
+                ),
+                dstSize = IntSize(
+                    (logo.width * scale).roundToInt(),
+                    (logo.height * scale).roundToInt(),
+                ),
+                alpha = glow,
+                filterQuality = FilterQuality.None,
+            )
+        }
+        for (i in 0..2) {
+            val wisp = agentHireSteam(steamProgress, i)
+            if (wisp.alpha > 0.005f) {
+                val wispW = (steam.width * wisp.scale * scale).roundToInt().coerceAtLeast(1)
+                val wispH = (steam.height * wisp.scale * scale).roundToInt().coerceAtLeast(1)
+                drawImage(
+                    steam,
+                    dstOffset = IntOffset(
+                        ((AgentHireSteamX + wisp.dx) * scale - wispW / 2f).roundToInt(),
+                        ((AgentHireSteamTop + wisp.dy) * scale - wispH / 2f).roundToInt(),
+                    ),
+                    dstSize = IntSize(wispW, wispH),
+                    alpha = wisp.alpha,
+                    filterQuality = FilterQuality.None,
+                )
+            }
+        }
+        val bob = (agentHireBob(bobPhase) * scale).roundToInt()
+        fun bobbed(image: ImageBitmap, left: Int, top: Int) {
+            drawImage(
+                image,
+                dstOffset = IntOffset((left * scale).roundToInt(), (top * scale).roundToInt() + bob),
+                dstSize = IntSize((image.width * scale).roundToInt(), (image.height * scale).roundToInt()),
+                filterQuality = FilterQuality.None,
+            )
+        }
+        bobbed(card1, AgentHireCard1Left, AgentHireCard1Top)
+        bobbed(card2, AgentHireCard2Left, AgentHireCard2Top)
+        bobbed(card3, AgentHireCard3Left, AgentHireCard3Top)
+        drawImage(
+            greeter,
+            dstOffset = IntOffset(
+                (AgentHireGreeterLeft * scale).roundToInt(),
+                (AgentHireGreeterTop * scale).roundToInt(),
+            ),
+            dstSize = IntSize(
+                (greeter.width * scale).roundToInt(),
+                (greeter.height * scale).roundToInt(),
+            ),
+            filterQuality = FilterQuality.None,
+        )
+        val pose = agentHireHandPose(actProgress)
+        drawImage(
+            hand,
+            dstOffset = IntOffset(
+                (AgentHireHandLeft * scale).roundToInt() + (pose.x * scale).roundToInt(),
+                (AgentHireHandTop * scale).roundToInt() + (pose.y * scale).roundToInt(),
+            ),
+            dstSize = IntSize(
+                (hand.width * scale).roundToInt(),
+                (hand.height * scale).roundToInt(),
+            ),
+            filterQuality = FilterQuality.None,
+        )
+        val blink = agentHireBlink(actProgress)
+        if (blink > 0.005f) {
+            fun lid(image: ImageBitmap, left: Int, top: Int) {
+                drawImage(
+                    image,
+                    dstOffset = IntOffset(
+                        (left * scale).roundToInt(),
+                        (top * scale).roundToInt(),
+                    ),
+                    dstSize = IntSize(
+                        (image.width * scale).roundToInt(),
+                        (image.height * scale).roundToInt(),
+                    ),
+                    alpha = blink,
+                    filterQuality = FilterQuality.None,
+                )
+            }
+            lid(lidL, AgentHireLidLLeft, AgentHireLidLTop)
+            lid(lidR, AgentHireLidRLeft, AgentHireLidRTop)
+        }
         // "Hire": gentle breathe anchored at the slice bottom-center, so the
         // bottom rows stay fixed while the letters swell upward.
         val breathe = agentHireTitleScale(hirePhase)
         val hireW = (hire.width * breathe * scale).roundToInt().coerceAtLeast(1)
         val hireH = (hire.height * breathe * scale).roundToInt().coerceAtLeast(1)
-        val hireCx = (hire.left + hire.width / 2f) * scale
-        val hireBottom = (hire.top + hire.height) * scale
+        val hireCx = (AgentHireHireLeft + hire.width / 2f) * scale
+        val hireBottom = AgentHireHireBottom * scale
         drawImage(
-            hire.image,
+            hire,
             dstOffset = IntOffset((hireCx - hireW / 2f).roundToInt(), (hireBottom - hireH).roundToInt()),
             dstSize = IntSize(hireW, hireH),
             filterQuality = FilterQuality.None,
         )
     }
 }
+
+private fun decodeHireLayer(context: android.content.Context, resId: Int): ImageBitmap =
+    BitmapFactory.decodeResource(context.resources, resId).asImageBitmap()
 
 /** Horizontal scrolling role cards (matches Pazada's CategoryChipRow: LazyRow + edge fades). */
 @Composable

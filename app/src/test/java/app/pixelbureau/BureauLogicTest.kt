@@ -14,6 +14,7 @@ import app.pixelbureau.logic.DefaultOutputStyle
 import app.pixelbureau.logic.HireRoleAll
 import app.pixelbureau.logic.HireRoleGeneral
 import app.pixelbureau.logic.candidatesForRole
+import app.pixelbureau.logic.candidatesNamed
 import app.pixelbureau.logic.hireRoleFilters
 import app.pixelbureau.logic.instructionEditCostsStar
 import app.pixelbureau.logic.matches
@@ -21,7 +22,17 @@ import app.pixelbureau.logic.hiredLook
 import app.pixelbureau.logic.looks
 import app.pixelbureau.logic.openingCandidatePool
 import app.pixelbureau.logic.workplace
+import app.pixelbureau.logic.HireBatchMax
+import app.pixelbureau.logic.HireBatchMin
+import app.pixelbureau.logic.HirePosting
+import app.pixelbureau.logic.decodeHirePosting
+import app.pixelbureau.logic.deliverHireBatch
+import app.pixelbureau.logic.encodeHirePosting
+import app.pixelbureau.logic.hireArrivalLine
+import app.pixelbureau.logic.hirePostingWithout
+import app.pixelbureau.logic.postHireJob
 import app.pixelbureau.logic.rollCandidatePool
+import app.pixelbureau.logic.rollMixedHireBatch
 import app.pixelbureau.logic.buildSystemPrompt
 import app.pixelbureau.net.parseWikipediaSearch
 import app.pixelbureau.net.parseDuckDuckGoInstant
@@ -113,6 +124,7 @@ import app.pixelbureau.logic.SimAgent
 import app.pixelbureau.logic.facingFromDelta
 import app.pixelbureau.logic.softenFacingTurn
 import app.pixelbureau.logic.spriteFrame
+import app.pixelbureau.ui.floorIdleLift
 import app.pixelbureau.logic.desksWithActiveScreens
 import app.pixelbureau.logic.coffeeSteamProgress
 import app.pixelbureau.logic.coffeeSteamWisps
@@ -754,6 +766,13 @@ class BureauLogicTest {
         assertEquals("chars/kai_type0", spriteFrame("kai", "type", 0, "left"))
         assertEquals("chars/kai_type1", spriteFrame("kai", "type", 6, "left"))
         assertEquals("chars/pixel_walk2", spriteFrame("pixel", "walk", 2, "left"))
+    }
+
+    @Test
+    fun floorPortraitsBobOutOfStep() {
+        assertEquals(1f, floorIdleLift(0.1f, 0), 0f)
+        assertEquals(0f, floorIdleLift(0.6f, 0), 0f)
+        assertTrue(floorIdleLift(0.1f, 0) != floorIdleLift(0.1f, 128))
     }
 
     @Test
@@ -1988,6 +2007,48 @@ class BureauLogicTest {
         assertEquals("lin", byName.getValue("Lin Xu").hiredLook())
         assertEquals("hugo", byName.getValue("Hugo").hiredLook())
         assertEquals("sora", byName.getValue("Sora").hiredLook())
+    }
+
+    @Test
+    fun postedJobArrivesNextDayAsAMixedBatch() {
+        assertEquals(HirePosting(), postHireJob(0))
+        val posted = postHireJob(2)
+        assertEquals(2, posted.postedDay)
+        assertTrue(posted.names.isEmpty())
+        assertFalse(posted.delivered)
+        assertEquals(posted, deliverHireBatch(posted, 2, Random(1)))
+
+        val ready = deliverHireBatch(posted, 3, Random(4), avoid = setOf("Pixel", "Kai", "Byte"))
+        assertTrue(ready.delivered)
+        assertFalse(ready.seen)
+        assertTrue(ready.names.size in HireBatchMin..HireBatchMax)
+        assertTrue(ready.names.none { it in setOf("Pixel", "Kai", "Byte") })
+        val people = candidatesNamed(ready.names)
+        assertEquals(ready.names, people.map { it.name })
+        assertTrue(people.map { it.role }.distinct().size >= 2)
+        assertEquals(ready, deliverHireBatch(ready, 9, Random(9)))
+
+        val hired = hirePostingWithout(ready, ready.names.first())
+        assertEquals(ready.names.size - 1, hired.names.size)
+        assertTrue(hired.delivered)
+        assertEquals(hired.names, deliverHireBatch(hired, 10, Random(1)).names)
+        assertEquals(hired, decodeHirePosting(encodeHirePosting(hired)))
+        assertEquals(HirePosting(), decodeHirePosting(null))
+        assertEquals(HirePosting(), decodeHirePosting("nope"))
+        assertEquals("There are 4 candidates for hire.", hireArrivalLine(4))
+        assertEquals("There is 1 candidate for hire.", hireArrivalLine(1))
+
+        for (seed in 0 until 24) {
+            val batch = rollMixedHireBatch(Random(seed))
+            assertTrue(batch.size in HireBatchMin..HireBatchMax)
+            assertEquals(batch.size, batch.map { it.name }.toSet().size)
+            assertTrue(batch.map { it.role }.distinct().size >= 2)
+            val general = batch.filter { it.role == HireRoleGeneral }
+            assertTrue(general.all { it.matches(it.name, HireRoleAll) })
+            assertTrue(general.none { person ->
+                hireRoleFilters.filter { it != HireRoleAll }.any { person.matches(person.name, it) }
+            })
+        }
     }
 
     @Test

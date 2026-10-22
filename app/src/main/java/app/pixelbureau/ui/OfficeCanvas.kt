@@ -207,6 +207,8 @@ fun OfficeCanvas(
     placed: List<PlacedProp> = emptyList(),
     /** Work-desk art: "desk" (default) or "desk_oak" (owned Oakwood desk). */
     deskSprite: String = "desk",
+    /** Desk-chair art: "chair" (ergonomic) or "chair_oak" (owned Oakwood chair). */
+    chairSprite: String = "chair",
     /** Conference finish: [CONF_STYLE_PREMIUM] glass, or [CONF_STYLE_OAK] boards. */
     confStyle: String = CONF_STYLE_PREMIUM,
     /** Tap on the glass conference room (floor or walls) when no agent was hit. */
@@ -363,7 +365,7 @@ fun OfficeCanvas(
         if (roomHighlight) drawConfHighlight(camera, System.currentTimeMillis(), oakRoom)
         for (piece in pieces) {
             when (piece) {
-                is Piece.Furniture -> drawFurniture(piece.prop, sprites, camera, litScreens, snapshot.fridgeOpen, deskSprite, oakRoom)
+                is Piece.Furniture -> drawFurniture(piece.prop, sprites, camera, litScreens, snapshot.fridgeOpen, deskSprite, oakRoom, chairSprite)
                 is Piece.Placed -> drawPlaced(piece.item, sprites, camera)
                 is Piece.Wall -> drawConfWall(piece.seg, camera, tvState, oakRoom)
                 is Piece.Door -> if (oakRoom) drawOakDoor(piece.open, camera) else drawConfDoor(piece.open, camera)
@@ -644,6 +646,7 @@ private fun DrawScope.drawFurniture(
     fridgeOpen: Boolean = false,
     deskSprite: String = "desk",
     oakRoom: Boolean = false,
+    chairSprite: String = "chair",
 ) {
     if (prop.kind == "desk") {
         // Owned desk type swaps the art of every work desk (exclusive group "desk").
@@ -700,7 +703,11 @@ private fun DrawScope.drawFurniture(
         return
     }
     val fridgeOpenBmp = if (prop.kind == "fridge" && fridgeOpen) sprites.get("props/fridge_open") else null
-    val bitmap = fridgeOpenBmp ?: sprites.get("props/${prop.kind}") ?: return
+    val chairArt = if (prop.kind == "chair" && sprites.get("props/$chairSprite") != null) chairSprite else null
+    val bitmap = fridgeOpenBmp
+        ?: chairArt?.let { sprites.get("props/$it") }
+        ?: sprites.get("props/${prop.kind}")
+        ?: return
     val (x, y) = when (prop.kind) {
         "sofa" -> {
             val span = OfficeMap.sofaSpan
@@ -713,7 +720,11 @@ private fun DrawScope.drawFurniture(
         "chair" -> (prop.x - OfficeMap.seatTuck) to prop.y.toFloat()
         else -> prop.x.toFloat() to prop.y.toFloat()
     }
-    val scaleKind = if (fridgeOpenBmp != null) "fridge_open" else prop.kind
+    val scaleKind = when {
+        fridgeOpenBmp != null -> "fridge_open"
+        chairArt != null -> chairArt
+        else -> prop.kind
+    }
     val baseBox = spriteBox(bitmap, x, y, propScale(scaleKind), camera)
     val box = if (prop.kind == "fridge") {
         val offset = OfficeMap.fridgeDrawOffset
@@ -765,8 +776,8 @@ private data class LaptopGlass(
 // Glass quad remapped for v28 desk-only packed reference (wallpaper+dock hull inset → crop fracs).
 private val DeskGlass = LaptopGlass(0.3629f, 0.1710f, 0.5553f, 0.1094f, 0.5735f, 0.2908f, 0.3784f, 0.3761f)
 
-// Same laptop pasted onto the oak desk (scripts/gen_desk_oak.py prints these fractions).
-private val OakGlass = LaptopGlass(0.1709f, 0.1050f, 0.4337f, 0.0296f, 0.4586f, 0.2517f, 0.1921f, 0.3561f)
+// Screen of the Dream Starter illustration, as fractions of the cropped desk_oak sprite.
+private val OakGlass = LaptopGlass(0.3926f, 0.1590f, 0.5304f, 0.0723f, 0.5284f, 0.2063f, 0.3902f, 0.2892f)
 
 private fun laptopGlassFor(deskSprite: String): LaptopGlass = if (deskSprite == "desk_oak") OakGlass else DeskGlass
 
@@ -992,6 +1003,7 @@ private fun propScale(kind: String): Float = when (kind) {
     "desk" -> 1.18f
     "desk_bare" -> 0.70f
     "chair" -> 0.68f
+    "chair_oak" -> 0.62f
     "sofa" -> 1.22f
     "server" -> 0.93f
     "plant" -> 0.42f
@@ -1007,8 +1019,9 @@ private fun propScale(kind: String): Float = when (kind) {
     "watercooler" -> 0.54f
     "foosball" -> 1.08f
     "trash" -> 0.48f
-    // Oak desk: bbox is 0.73× the default desk, so scale up to keep it from hiding behind the chair.
-    "desk_oak" -> 1.08f
+    // Dream Starter art is flatter than Premium Startup (924x1309 vs 786x963).
+    // 1.27 matches that desk's on-screen area: about 8% wider and 7% shorter.
+    "desk_oak" -> 1.27f
     "desk_top" -> 0.95f
     "bike" -> 0.62f
     "plant_top" -> 0.45f

@@ -59,6 +59,7 @@ import app.pixelbureau.R
 import kotlin.math.roundToInt
 import app.pixelbureau.logic.HeroCityLoopMs
 import app.pixelbureau.logic.HeroCloudLoopMs
+import app.pixelbureau.logic.heroTileLayout
 import app.pixelbureau.logic.heroTileShift
 import app.pixelbureau.modules.pixelnews.PixelNews
 import app.pixelbureau.modules.pixelnews.PixelNewsCard
@@ -326,19 +327,17 @@ private fun PixegleHero() {
 
 /** Draws [tile] twice so a rightward [shiftPx] scroll wraps seamlessly. */
 private fun DrawScope.drawWrappedTile(tile: ImageBitmap, shiftPx: Int, dstW: Int, dstH: Int) {
-    val scale = dstW / tile.width.toFloat()
-    val first = ((shiftPx - tile.width) * scale).roundToInt()
-    val second = (shiftPx * scale).roundToInt()
+    val layout = heroTileLayout(shiftPx, tile.width, dstW)
     drawImage(
         tile,
-        dstOffset = IntOffset(first, 0),
-        dstSize = IntSize(dstW, dstH),
+        dstOffset = IntOffset(layout.firstX, 0),
+        dstSize = IntSize(layout.firstW.coerceAtLeast(1), dstH),
         filterQuality = FilterQuality.None,
     )
     drawImage(
         tile,
-        dstOffset = IntOffset(second, 0),
-        dstSize = IntSize(dstW, dstH),
+        dstOffset = IntOffset(layout.secondX, 0),
+        dstSize = IntSize(layout.secondW, dstH),
         filterQuality = FilterQuality.None,
     )
 }

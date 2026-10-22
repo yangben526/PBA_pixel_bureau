@@ -6,7 +6,10 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import app.pixelbureau.logic.BubbleSpeechScaleDefault
 import app.pixelbureau.logic.Cell
+import app.pixelbureau.logic.HirePosting
 import app.pixelbureau.logic.LlmCatalog
+import app.pixelbureau.logic.decodeHirePosting
+import app.pixelbureau.logic.encodeHirePosting
 import app.pixelbureau.logic.coerceBubbleSpeechScale
 import app.pixelbureau.logic.SavedLlm
 import app.pixelbureau.logic.catalogFromLegacy
@@ -104,6 +107,16 @@ class SettingsStore(context: Context) {
 
     fun writeTimeToolEnabled(enabled: Boolean) {
         prefs.edit().putBoolean(KEY_TIME_TOOL, enabled).apply()
+    }
+
+    /** AgentHire job posting: day posted, and the names that arrived the next day. */
+    fun readHirePosting(): HirePosting = decodeHirePosting(prefs.getString(KEY_HIRE_POSTING, null))
+
+    fun writeHirePosting(posting: HirePosting) {
+        val raw = encodeHirePosting(posting)
+        val editor = prefs.edit()
+        if (raw.isEmpty()) editor.remove(KEY_HIRE_POSTING) else editor.putString(KEY_HIRE_POSTING, raw)
+        editor.apply()
     }
 
     /** System settings: agent-to-agent bubble lines may call the assigned model. Default on. */
@@ -277,6 +290,7 @@ class SettingsStore(context: Context) {
         const val KEY_MODEL = "model"
         const val KEY_INTERNET_SEARCH = "internet_search_enabled"
         const val KEY_TIME_TOOL = "time_tool_enabled"
+        const val KEY_HIRE_POSTING = "hire_posting"
         const val KEY_BUBBLE_SPEECH_LLM = "bubble_speech_llm"
         const val KEY_BUBBLE_SPEECH_SCALE = "bubble_speech_scale"
         const val KEY_CHAT_FRACTION = "chat_panel_fraction"

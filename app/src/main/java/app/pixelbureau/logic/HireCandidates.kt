@@ -67,6 +67,121 @@ fun candidatesForRole(role: String): List<HireCandidate> {
     }
 }
 
+/** Smallest next-day applicant group. */
+const val HireBatchMin = 3
+
+/** Largest next-day applicant group. */
+const val HireBatchMax = 6
+
+/**
+ * One posted job. [postedDay] is the bureau day it was posted (0 = none).
+ * [names] stay empty until the following day. [delivered] stays true after
+ * that roll so hiring people off the list does not roll a new group.
+ * [seen] is the HR dialog already dismissed.
+ */
+data class HirePosting(
+    val postedDay: Int = 0,
+    val names: List<String> = emptyList(),
+    val delivered: Boolean = false,
+    val seen: Boolean = false,
+)
+
+/** Start a search. Any previous group is replaced and arrives the next day. */
+fun postHireJob(day: Int): HirePosting {
+    if (day <= 0) return HirePosting()
+    return HirePosting(postedDay = day)
+}
+
+/**
+ * On the day after a posting, roll [HireBatchMin]–[HireBatchMax] people from
+ * more than one role. Later days do not re-roll a group that already arrived.
+ */
+fun deliverHireBatch(
+    posting: HirePosting,
+    day: Int,
+    random: Random = Random.Default,
+    avoid: Set<String> = emptySet(),
+): HirePosting {
+    if (posting.postedDay <= 0 || posting.delivered || day <= posting.postedDay) {
+        return posting
+    }
+    val rolled = rollMixedHireBatch(random, avoid)
+    return posting.copy(names = rolled.map { it.name }, delivered = true, seen = false)
+}
+
+/** Drop someone who was just hired. The rest of the batch stays. */
+fun hirePostingWithout(posting: HirePosting, name: String): HirePosting =
+    posting.copy(names = posting.names.filterNot { it.equals(name, ignoreCase = true) })
+
+/** Catalog rows for a saved batch, in saved order. Unknown names are skipped. */
+fun candidatesNamed(names: List<String>): List<HireCandidate> {
+    val byName = hireCatalog.associateBy { it.name }
+    return names.mapNotNull { byName[it] }
+}
+
+/** What the HR agent says when the batch arrives. */
+fun hireArrivalLine(count: Int): String = when (count) {
+    1 -> "There is 1 candidate for hire."
+    else -> "There are $count candidates for hire."
+}
+
+/**
+ * A mixed-role handful. Takes people round-robin across roles so a batch of
+ * 3–6 is not all one department, then shuffles the result.
+ * Falls back to the full catalog when [avoid] leaves fewer than [HireBatchMin].
+ */
+fun rollMixedHireBatch(
+    random: Random = Random.Default,
+    avoid: Set<String> = emptySet(),
+): List<HireCandidate> {
+    val count = random.nextInt(HireBatchMin, HireBatchMax + 1)
+    val fresh = hireCatalog.filter { it.name !in avoid }
+    val pool = if (fresh.size >= HireBatchMin) fresh else hireCatalog
+    val byRole = pool.groupBy { it.role }
+        .mapValues { (_, people) -> people.shuffled(random).toMutableList() }
+        .toMutableMap()
+    val roleOrder = byRole.keys.shuffled(random)
+    val picked = mutableListOf<HireCandidate>()
+    var guard = 0
+    while (picked.size < count && guard < pool.size) {
+        var added = false
+        for (role in roleOrder) {
+            if (picked.size >= count) break
+            val next = byRole.getValue(role).removeFirstOrNull() ?: continue
+            picked += next
+            added = true
+        }
+        if (!added) break
+        guard++
+    }
+    return picked.shuffled(random)
+}
+
+/** `postedDay|seen|delivered|Name,Name`. Blank is no posting. */
+fun encodeHirePosting(posting: HirePosting): String {
+    if (posting.postedDay <= 0 && posting.names.isEmpty() && !posting.delivered) return ""
+    return listOf(
+        posting.postedDay.toString(),
+        if (posting.seen) "1" else "0",
+        if (posting.delivered) "1" else "0",
+        posting.names.joinToString(","),
+    ).joinToString("|")
+}
+
+fun decodeHirePosting(raw: String?): HirePosting {
+    if (raw.isNullOrBlank()) return HirePosting()
+    val parts = raw.split('|', limit = 4)
+    if (parts.size < 4) return HirePosting()
+    val day = parts[0].toIntOrNull() ?: return HirePosting()
+    val names = parts[3].split(',').map { it.trim() }.filter { it.isNotEmpty() }
+    return HirePosting(
+        postedDay = day,
+        names = names,
+        seen = parts[1] == "1",
+        delivered = parts[2] == "1",
+    )
+}
+
 /** A new handful of candidates. Skips [avoid] while enough people remain. */
 fun rollCandidatePool(
     random: Random = Random.Default,
