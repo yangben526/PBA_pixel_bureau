@@ -28,7 +28,7 @@ class SpriteStore(private val context: Context) {
         if (ready) {
             return@withContext
         }
-        val cacheDir = File(context.filesDir, "sprites-v55").apply { mkdirs() }
+        val cacheDir = File(context.filesDir, "sprites-v57").apply { mkdirs() }
         for (name in names) {
             val cache = File(cacheDir, name.replace('/', '_') + ".png")
             val bitmap = if (cache.exists()) {

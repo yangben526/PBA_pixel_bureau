@@ -546,11 +546,34 @@ private fun grantStars(score: StarScore, stars: Int): StarScore {
     return score.copy(reputation = reputation, day = day, chatCredit = score.chatCredit)
 }
 
+/** One workday on the floor: 9:00 through 17:59, one real second per game minute. */
+const val OfficeWorkdayMillis = 9 * 60 * 1000L
+
+/** [day] is the bureau day. [elapsedMillis] is how far the current workday has run. */
+data class OfficeClockState(val day: Int, val elapsedMillis: Long)
+
 fun officeClock(nowMillis: Long): String {
     val minuteOfDay = ((nowMillis / 1000L) % (9 * 60)).toInt()
     val hour = 9 + minuteOfDay / 60
     val minute = minuteOfDay % 60
     return "%d:%02d".format(hour, minute)
+}
+
+/**
+ * Moves the workday clock by [deltaMillis]. Menus do not pause it.
+ * [paused] is only for the app in the background. Crossing 18:00 starts the next day at 9:00.
+ */
+fun stepOfficeClock(state: OfficeClockState, deltaMillis: Long, paused: Boolean): OfficeClockState {
+    if (paused || deltaMillis <= 0) {
+        return state
+    }
+    var elapsed = state.elapsedMillis + deltaMillis
+    var day = state.day
+    while (elapsed >= OfficeWorkdayMillis) {
+        elapsed -= OfficeWorkdayMillis
+        day += 1
+    }
+    return OfficeClockState(day, elapsed)
 }
 
 /**

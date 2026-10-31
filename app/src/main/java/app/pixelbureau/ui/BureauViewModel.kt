@@ -51,7 +51,10 @@ import app.pixelbureau.data.TaskforceMessage
 import app.pixelbureau.data.Taskforce
 import app.pixelbureau.logic.AgentTool
 import app.pixelbureau.logic.HirePosting
+import app.pixelbureau.logic.OfficeClockState
+import app.pixelbureau.logic.stepOfficeClock
 import app.pixelbureau.logic.OfficeMap
+import app.pixelbureau.logic.HireWaitMillis
 import app.pixelbureau.logic.deliverHireBatch
 import app.pixelbureau.logic.hirePostingWithout
 import app.pixelbureau.logic.postHireJob
@@ -88,6 +91,8 @@ data class PendingAttachment(
 
 data class BureauUi(
     val bureau: Bureau? = null,
+    /** Milliseconds into the current workday. Menus do not move this. */
+    val officeClockMillis: Long = 0L,
     val agents: List<Agent> = emptyList(),
     val tasks: List<Task> = emptyList(),
     val messages: List<Message> = emptyList(),
@@ -96,6 +101,8 @@ data class BureauUi(
     val pendingAttachments: List<PendingAttachment> = emptyList(),
     val banner: String? = null,
     val spritesReady: Boolean = false,
+    /** Startup cutscene played this session; tab switches must not replay it. */
+    val introPlayed: Boolean = false,
     val streams: Map<String, StreamUi> = emptyMap(),
     val settings: LlmSettings = LlmSettings(apiKey = ""),
     val models: List<SavedLlm> = emptyList(),
@@ -260,6 +267,7 @@ class BureauViewModel(app: Application) : AndroidViewModel(app) {
     private var watchingId: String? = null
 
     private var rosterReady = false
+    private var hireWatch: Job? = null
 
     private val _ui = MutableStateFlow(
         run {
@@ -296,8 +304,12 @@ class BureauViewModel(app: Application) : AndroidViewModel(app) {
     /** In-memory placement preview (debug intent only); never written to settings. */
     private var previewCopies: List<Pair<String, String>> = emptyList()
 
+    /** Milliseconds into the current workday. Saved so a menu cannot skip the clock. */
+    private var clockElapsed = container.settings.readOfficeClock()
+
 
     init {
+        _ui.update { it.copy(officeClockMillis = clockElapsed) }
         reloadSettings()
         refreshPlacements(container.settings.readOwnedItems())
         viewModelScope.launch {
@@ -319,7 +331,8 @@ class BureauViewModel(app: Application) : AndroidViewModel(app) {
             }
             repository.observeBureau().collect { bureau ->
                 _ui.update { it.copy(bureau = bureau) }
-                syncHirePosting(bureau?.day ?: 1)
+                syncHirePosting(System.currentTimeMillis())
+                armHireDelivery()
             }
         }
         viewModelScope.launch {
@@ -331,7 +344,8 @@ class BureauViewModel(app: Application) : AndroidViewModel(app) {
                     state.copy(agents = agents, selectedId = next)
                 }
                 rosterReady = true
-                syncHirePosting(_ui.value.bureau?.day ?: 1)
+                syncHirePosting(System.currentTimeMillis())
+                armHireDelivery()
                 val selected = _ui.value.selectedId
                 if (selected != watchingId) {
                     watchMessages(selected)
@@ -403,6 +417,10 @@ class BureauViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun markIntroPlayed() {
+        _ui.update { it.copy(introPlayed = true) }
+    }
+
     fun select(agentId: String) {
         val agent = _ui.value.agents.firstOrNull { it.id == agentId && !it.archived } ?: return
         if (_ui.value.selectedTaskforceId != null) {
@@ -450,12 +468,14 @@ class BureauViewModel(app: Application) : AndroidViewModel(app) {
         _ui.update { it.copy(draft = value) }
     }
 
-    /** AgentHire: ask HR to look. The group arrives on the next bureau day. */
+    /** AgentHire: ask HR to look. The group arrives after 5 minutes of phone time. */
     fun postJob() {
-        val day = _ui.value.bureau?.day ?: return
-        val next = postHireJob(day)
+        val next = postHireJob(System.currentTimeMillis())
         container.settings.writeHirePosting(next)
         _ui.update { it.copy(hirePosting = next, hireDialogOpen = false) }
+        hireWatch?.cancel()
+        hireWatch = null
+        armHireDelivery()
     }
 
     /** The next-day HR line. [openPage] asks Company to show AgentHire. */
@@ -476,16 +496,38 @@ class BureauViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /**
-     * Roll the posted job once the roster is loaded and the bureau day has
-     * moved on. A delivered group is left as it was saved.
+     * Roll the posted job once the roster is loaded and 5 minutes of phone
+     * time have passed. A delivered group is left as it was saved.
      */
-    private fun syncHirePosting(day: Int) {
+    private fun syncHirePosting(nowMillis: Long) {
         if (!rosterReady) return
         val avoid = _ui.value.agents.filter { !it.archived }.map { it.name }.toSet()
         val before = container.settings.readHirePosting()
-        val next = deliverHireBatch(before, day, Random.Default, avoid)
+        val next = deliverHireBatch(before, nowMillis, Random.Default, avoid)
         if (next != before) container.settings.writeHirePosting(next)
         _ui.update { it.copy(hirePosting = next, hireDialogOpen = next.names.isNotEmpty() && !next.seen) }
+    }
+
+    /**
+     * While a search is out, compare the phone clock about once a second.
+     * Closing the app does not reset the wait: the saved post time is wall clock.
+     */
+    private fun armHireDelivery() {
+        val posting = _ui.value.hirePosting
+        if (!rosterReady || posting.postedAtMillis <= 0L || posting.delivered) return
+        if (hireWatch?.isActive == true) return
+        hireWatch = viewModelScope.launch {
+            while (true) {
+                val current = _ui.value.hirePosting
+                if (!rosterReady || current.postedAtMillis <= 0L || current.delivered) return@launch
+                val now = System.currentTimeMillis()
+                if (now >= current.postedAtMillis + HireWaitMillis) {
+                    syncHirePosting(now)
+                    if (_ui.value.hirePosting.delivered) return@launch
+                }
+                delay(1_000)
+            }
+        }
     }
 
     /**
@@ -507,6 +549,26 @@ class BureauViewModel(app: Application) : AndroidViewModel(app) {
 
     fun dismissDeskPrompt() {
         _ui.update { it.copy(deskOpenedPrompt = false) }
+    }
+
+    /**
+     * Advances the floor clock on every screen, including menus.
+     * [paused] is only while the app is in the background.
+     */
+    suspend fun advanceOfficeClock(deltaMillis: Long, paused: Boolean) {
+        if (paused || deltaMillis <= 0 || _ui.value.bureau == null) {
+            return
+        }
+        val delta = deltaMillis.coerceAtMost(2_000L)
+        val day = _ui.value.bureau?.day ?: return
+        val next = stepOfficeClock(OfficeClockState(day, clockElapsed), delta, paused = false)
+        clockElapsed = next.elapsedMillis
+        container.settings.writeOfficeClock(clockElapsed)
+        _ui.update { it.copy(officeClockMillis = clockElapsed) }
+        val gained = next.day - day
+        if (gained > 0) {
+            repository.addBureauDays(gained)
+        }
     }
 
     /**

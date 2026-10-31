@@ -3,8 +3,10 @@ package app.pixelbureau.ui
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.runtime.LaunchedEffect
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Paint
 import android.graphics.Typeface
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -17,9 +19,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import android.content.Context
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -30,6 +36,7 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
+import app.pixelbureau.R
 import app.pixelbureau.logic.ActorSnap
 import app.pixelbureau.logic.OfficeMap
 import app.pixelbureau.logic.PlacedProp
@@ -50,9 +57,45 @@ import app.pixelbureau.logic.serverLedStrength
 import app.pixelbureau.logic.serverLeds
 import app.pixelbureau.logic.spriteFrame
 import app.pixelbureau.sprites.SpriteStore
+import app.pixelbureau.logic.DriftCloud
+import app.pixelbureau.logic.IntroBeat
+import app.pixelbureau.logic.IntroBird
+import app.pixelbureau.logic.IntroCloud
+import app.pixelbureau.logic.IntroSparkle
+import app.pixelbureau.logic.IntroWheelHubX
+import app.pixelbureau.logic.IntroWheelHubY
+import app.pixelbureau.logic.introApproachT
+import app.pixelbureau.logic.introBankAlpha
+import app.pixelbureau.logic.introBankOffset
+import app.pixelbureau.logic.introBirdAt
+import app.pixelbureau.logic.introBirds
+import app.pixelbureau.logic.introCaptionAlpha
+import app.pixelbureau.logic.introCaptionText
+import app.pixelbureau.logic.introCityPlate
+import app.pixelbureau.logic.introCityT
+import app.pixelbureau.logic.introClearCloud
+import app.pixelbureau.logic.introCloudAt
+import app.pixelbureau.logic.introCloudSeeds
+import app.pixelbureau.logic.introCoverFrame
+import app.pixelbureau.logic.introDots
+import app.pixelbureau.logic.introDriftAt
+import app.pixelbureau.logic.introDriftEdgeFade
+import app.pixelbureau.logic.introDriftSeeds
+import app.pixelbureau.logic.introOfficeZoom
+import app.pixelbureau.logic.introPuffScroll
+import app.pixelbureau.logic.introRevealT
+import app.pixelbureau.logic.introShipAt
+import app.pixelbureau.logic.IntroShipLanes
+import app.pixelbureau.logic.introSparkleAlpha
+import app.pixelbureau.logic.introSparkles
+import app.pixelbureau.logic.introVeilAlpha
+import app.pixelbureau.logic.introWheelAngle
 import kotlin.math.abs
+import kotlin.math.cos
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sin
+import kotlin.math.sqrt
 
 internal class OfficeCamera {
     var scale: Float = 1f
@@ -192,6 +235,333 @@ private val ServerLedAmber = Color(0xFFFFC43A)
 private val CoffeeSteam = Color(0xE8F5F0E8)
 private val CoffeeSteamSoft = Color(0x66EDE6DC)
 
+/** Startup cutscene sky, also the bars around the aerial until it fills the view. */
+private val IntroSky = Color(0xFF5AADE6)
+
+/**
+ * Cutscene layer art, cut from the intro plate by gen_intro_city_layers.py:
+ * the clean base plus every animated matter. Any missing piece is skipped
+ * so the cutscene still plays.
+ */
+private class IntroLayers(
+    val base: ImageBitmap?,
+    /** Cruise liner, ferry A, ferry B, aligned with [IntroShipLanes]. */
+    val ships: List<ImageBitmap?>,
+    val rim: ImageBitmap?,
+    val legs: ImageBitmap?,
+    /** Foreground drift puffs + CLEAR rush clouds. */
+    val puffs: List<ImageBitmap>,
+    /** Wide bank scrolling across the bottom of the sky. */
+    val bank: ImageBitmap?,
+)
+
+private fun decodeIntroBitmap(context: Context, id: Int): ImageBitmap? =
+    BitmapFactory.decodeResource(context.resources, id)?.asImageBitmap()
+
+/** Ship sprite top-lefts in plate px (measured cut coords). */
+private val IntroShipOffsets = listOf(
+    1086f to 583f,
+    992f to 492f,
+    948f to 551f,
+)
+
+/** Hull half-length / half-height in plate px, for wakes and shadows. */
+private val IntroShipHalf = listOf(
+    45f to 33f,
+    36f to 19f,
+    13f to 10f,
+)
+
+/** Wheel sprite top-left in plate px; hub is [IntroWheelHubX]/[IntroWheelHubY]. */
+private const val IntroWheelOffX = 1050f
+private const val IntroWheelOffY = 283f
+
+private val IntroBirdInk = Color(0xFF3A4A5A)
+private val IntroWakeFoam = Color.White
+private val IntroShipShadow = Color(0xFF0A2A44)
+
+/** Kairosoft caption chip for the startup cutscene. */
+private fun DrawScope.drawIntroCaption(text: String, alpha: Float) {
+    if (alpha <= 0.01f) return
+    val k = (min(size.width, size.height) / 900f).coerceIn(0.7f, 1.4f)
+    val chipW = min(size.width * 0.82f, 680f * k)
+    val chipH = 92f * k
+    val left = (size.width - chipW) / 2f
+    val top = size.height * 0.80f - chipH / 2f
+    drawRoundRect(
+        color = Color(0xE61C1A17).copy(alpha = alpha),
+        topLeft = Offset(left, top),
+        size = androidx.compose.ui.geometry.Size(chipW, chipH),
+        cornerRadius = CornerRadius(20f * k, 20f * k),
+    )
+    val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = android.graphics.Color.parseColor("#F3E6C8")
+        textAlign = Paint.Align.CENTER
+        textSize = 40f * k
+        this.alpha = (255f * alpha).toInt().coerceIn(0, 255)
+    }
+    drawContext.canvas.nativeCanvas.drawText(
+        text,
+        size.width / 2f,
+        top + chipH * 0.68f,
+        paint,
+    )
+}
+
+/** Zoom-through clouds for the startup cutscene; revealT > 0 rushes them out. */
+private fun DrawScope.drawCutsceneClouds(
+    bitmaps: List<ImageBitmap>,
+    seeds: List<IntroCloud>,
+    loopMs: Long,
+    revealT: Float,
+) {
+    val cx = size.width / 2f
+    val cy = size.height / 2f
+    val maxR = max(size.width, size.height) * 0.75f
+    val screenK = (min(size.width, size.height) / 900f).coerceIn(0.7f, 1.4f)
+    for ((i, cloud) in seeds.withIndex()) {
+        var draw = introCloudAt(cloud, loopMs)
+        if (revealT > 0f) {
+            draw = introClearCloud(draw, revealT) ?: continue
+        }
+        if (draw.alpha <= 0.01f || draw.dist > 1.3f) continue
+        val bmp = bitmaps[i % bitmaps.size]
+        val w = bmp.width * draw.scale * screenK
+        val h = bmp.height * draw.scale * screenK
+        val px = cx + cos(cloud.angleRad) * draw.dist * maxR
+        val py = cy + sin(cloud.angleRad) * draw.dist * maxR * 0.85f
+        drawImage(
+            image = bmp,
+            dstOffset = IntOffset((px - w / 2f).toInt(), (py - h / 2f).toInt()),
+            dstSize = IntSize(w.toInt().coerceAtLeast(1), h.toInt().coerceAtLeast(1)),
+            alpha = draw.alpha,
+            filterQuality = FilterQuality.None,
+        )
+    }
+}
+
+/**
+ * CITY + APPROACH: the lively city. The clean base always covers the
+ * screen; ships sail with foam wakes, the wheel spins, glitter twinkles,
+ * gulls flap past, and foreground clouds stream by on the diagonal.
+ */
+private fun DrawScope.drawIntroCityLayers(
+    art: IntroLayers,
+    cutMs: Long,
+    cityMs: Long,
+    approachMs: Long?,
+    approachT: Float?,
+    driftSeeds: List<DriftCloud>,
+    sparkles: List<IntroSparkle>,
+    birds: List<IntroBird>,
+) {
+    val base = art.base
+    if (base == null) {
+        drawRect(IntroSky)
+        return
+    }
+    val plate = introCityPlate(introCityT(cityMs), approachT)
+    val frame = introCoverFrame(
+        size.width, size.height,
+        base.width.toFloat(), base.height.toFloat(), plate,
+    )
+    drawImage(
+        image = base,
+        dstOffset = IntOffset(frame.left.toInt(), frame.top.toInt()),
+        dstSize = IntSize(frame.width.toInt().coerceAtLeast(1), frame.height.toInt().coerceAtLeast(1)),
+        filterQuality = FilterQuality.Medium,
+    )
+    val sc = frame.scale
+    val scK = (sc / 2.5f).coerceIn(0.5f, 1.6f)
+    // Sun glitter on the water.
+    for (s in sparkles) {
+        val a = introSparkleAlpha(s, cutMs)
+        if (a < 0.03f) continue
+        val cx = frame.left + s.x * frame.width
+        val cy = frame.top + s.y * frame.height
+        if (cx < -8f || cy < -8f || cx > size.width + 8f || cy > size.height + 8f) continue
+        val r = 2.4f * s.size * scK
+        val col = Color.White.copy(alpha = a * 0.85f)
+        drawLine(col, Offset(cx - r, cy), Offset(cx + r, cy), strokeWidth = 2f)
+        drawLine(col, Offset(cx, cy - r), Offset(cx, cy + r), strokeWidth = 2f)
+    }
+    // Ships: shadow, foam wake, hull.
+    for ((i, lane) in IntroShipLanes.withIndex()) {
+        val (sx, sy) = introShipAt(lane, cutMs)
+        val cx = frame.left + sx * sc
+        val cy = frame.top + sy * sc
+        if (cx < -250f || cy < -250f || cx > size.width + 250f || cy > size.height + 250f) continue
+        val (halfL, halfH) = IntroShipHalf[i]
+        val dx = lane.x1 - lane.x0
+        val dy = lane.y1 - lane.y0
+        val dl = sqrt(dx * dx + dy * dy).coerceAtLeast(1f)
+        val ux = dx / dl
+        val uy = dy / dl
+        // Soft contact shadow on the water.
+        drawOval(
+            IntroShipShadow.copy(alpha = 0.12f),
+            topLeft = Offset(cx - halfL * sc * 0.75f, cy + halfH * sc * 0.10f),
+            size = androidx.compose.ui.geometry.Size(halfL * sc * 1.5f, halfH * sc * 0.85f),
+        )
+        // Foam fan behind the stern, shimmering, dissolving with distance.
+        val shimmer = 0.82f + 0.18f * sin(cutMs.toFloat() / 170f + i * 2.1f)
+        val sternX = cx - ux * halfL * sc
+        val sternY = cy - uy * halfL * sc + halfH * sc * 0.25f
+        val wakeLen = halfL * sc * 1.45f
+        val spread = wakeLen * 0.38f
+        val px = -uy
+        val py = ux
+        val tipX = sternX - ux * wakeLen
+        val tipY = sternY - uy * wakeLen
+        val c1x = tipX + px * spread
+        val c1y = tipY + py * spread
+        val c2x = tipX - px * spread
+        val c2y = tipY - py * spread
+        // Soft foam triangle with bowed-out V edges and a churning core.
+        val wake = Path().apply {
+            moveTo(sternX, sternY)
+            quadraticTo(
+                sternX - ux * wakeLen * 0.55f + px * spread * 0.42f,
+                sternY - uy * wakeLen * 0.55f + py * spread * 0.42f,
+                c1x, c1y,
+            )
+            lineTo(c2x, c2y)
+            quadraticTo(
+                sternX - ux * wakeLen * 0.55f - px * spread * 0.42f,
+                sternY - uy * wakeLen * 0.55f - py * spread * 0.42f,
+                sternX, sternY,
+            )
+            close()
+        }
+        val gx0 = minOf(sternX, tipX)
+        val gx1 = maxOf(sternX, tipX).coerceAtLeast(gx0 + 1f)
+        val headFirst = sternX <= tipX
+        val foamHead = IntroWakeFoam.copy(alpha = 0.20f * shimmer)
+        val foamTail = IntroWakeFoam.copy(alpha = 0f)
+        drawPath(
+            wake,
+            Brush.horizontalGradient(
+                0f to if (headFirst) foamHead else foamTail,
+                1f to if (headFirst) foamTail else foamHead,
+                startX = gx0,
+                endX = gx1,
+            ),
+        )
+        val edgeW = (1.4f * scK).coerceAtLeast(1f)
+        val edge = Path().apply {
+            moveTo(sternX, sternY)
+            quadraticTo(
+                sternX - ux * wakeLen * 0.55f + px * spread * 0.42f,
+                sternY - uy * wakeLen * 0.55f + py * spread * 0.42f,
+                c1x, c1y,
+            )
+        }
+        val edge2 = Path().apply {
+            moveTo(sternX, sternY)
+            quadraticTo(
+                sternX - ux * wakeLen * 0.55f - px * spread * 0.42f,
+                sternY - uy * wakeLen * 0.55f - py * spread * 0.42f,
+                c2x, c2y,
+            )
+        }
+        drawPath(edge, IntroWakeFoam.copy(alpha = 0.32f * shimmer), style = androidx.compose.ui.graphics.drawscope.Stroke(width = edgeW))
+        drawPath(edge2, IntroWakeFoam.copy(alpha = 0.32f * shimmer), style = androidx.compose.ui.graphics.drawscope.Stroke(width = edgeW))
+        drawLine(
+            IntroWakeFoam.copy(alpha = 0.30f * shimmer),
+            Offset(sternX, sternY),
+            Offset(sternX - ux * wakeLen * 0.4f, sternY - uy * wakeLen * 0.4f),
+            strokeWidth = edgeW * 1.4f,
+        )
+        val bmp = art.ships.getOrNull(i) ?: continue
+        val (ox, oy) = IntroShipOffsets[i]
+        val ax = (lane.x0 - ox) * sc
+        val ay = (lane.y0 - oy) * sc
+        drawImage(
+            image = bmp,
+            dstOffset = IntOffset((cx - ax).toInt(), (cy - ay).toInt()),
+            dstSize = IntSize((bmp.width * sc).toInt().coerceAtLeast(1), (bmp.height * sc).toInt().coerceAtLeast(1)),
+            filterQuality = FilterQuality.Medium,
+        )
+    }
+    // Ferris wheel: static legs, spinning rim.
+    val wheelL = frame.left + IntroWheelOffX * sc
+    val wheelT = frame.top + IntroWheelOffY * sc
+    val wheelOn = wheelL < size.width && wheelT < size.height &&
+        wheelL + (art.legs?.width ?: art.rim?.width ?: 0) * sc > 0f &&
+        wheelT + (art.legs?.height ?: art.rim?.height ?: 0) * sc > 0f
+    if (wheelOn) {
+        art.legs?.let { legs ->
+            drawImage(
+                image = legs,
+                dstOffset = IntOffset(wheelL.toInt(), wheelT.toInt()),
+                dstSize = IntSize((legs.width * sc).toInt().coerceAtLeast(1), (legs.height * sc).toInt().coerceAtLeast(1)),
+                filterQuality = FilterQuality.Medium,
+            )
+        }
+        art.rim?.let { rim ->
+            rotate(introWheelAngle(cutMs), Offset(frame.left + IntroWheelHubX * sc, frame.top + IntroWheelHubY * sc)) {
+                drawImage(
+                    image = rim,
+                    dstOffset = IntOffset(wheelL.toInt(), wheelT.toInt()),
+                    dstSize = IntSize((rim.width * sc).toInt().coerceAtLeast(1), (rim.height * sc).toInt().coerceAtLeast(1)),
+                    filterQuality = FilterQuality.Medium,
+                )
+            }
+        }
+    }
+    // Gulls over the bay.
+    for (b in birds) {
+        val d = introBirdAt(b, cutMs)
+        val cx = frame.left + d.x * frame.width
+        val cy = frame.top + d.y * frame.height
+        if (cx < -40f || cy < -40f || cx > size.width + 40f || cy > size.height + 40f) continue
+        val w = 6f * scK
+        val lift = -d.flap * 3.5f * scK
+        val stroke = (2f * scK).coerceAtLeast(1f)
+        drawLine(IntroBirdInk, Offset(cx - w, cy - lift), Offset(cx, cy), strokeWidth = stroke)
+        drawLine(IntroBirdInk, Offset(cx, cy), Offset(cx + w, cy - lift), strokeWidth = stroke)
+    }
+    // Cloud bank scrolling across the bottom of the sky.
+    val bank = art.bank
+    val bankA = introBankAlpha(approachT)
+    if (bank != null && bankA > 0.02f) {
+        val bh = size.height * 0.16f
+        val bw = bh * bank.width / bank.height
+        val xoff = -introBankOffset(cutMs) * bw
+        val top = size.height - bh
+        for (k in 0..1) {
+            val l = xoff + k * bw
+            if (l + bw < 0f || l > size.width) continue
+            drawImage(
+                image = bank,
+                dstOffset = IntOffset(l.toInt(), top.toInt()),
+                dstSize = IntSize(bw.toInt().coerceAtLeast(1), bh.toInt().coerceAtLeast(1)),
+                alpha = bankA * 0.92f,
+                filterQuality = FilterQuality.Medium,
+            )
+        }
+    }
+    // Foreground puffs streaming past on the diagonal. They thin out as
+    // the camera bursts through into clear view of the tower on the dive.
+    val scroll = introPuffScroll(cityMs, approachMs, approachT)
+    val clearK = 1f - (approachT ?: 0f) * 0.55f
+    val unit = min(size.width, size.height)
+    for ((i, seed) in driftSeeds.withIndex()) {
+        val bmp = art.puffs.getOrNull(i % 2) ?: continue
+        val (fx, fy) = introDriftAt(seed, scroll)
+        val a = (0.24f + 0.10f * seed.layer) * introDriftEdgeFade(fx, fy) * clearK
+        if (a < 0.02f) continue
+        val w = seed.size * unit * 0.48f
+        val h = w * bmp.height / bmp.width
+        drawImage(
+            image = bmp,
+            dstOffset = IntOffset((fx * size.width - w / 2f).toInt(), (fy * size.height - h / 2f).toInt()),
+            dstSize = IntSize(w.toInt().coerceAtLeast(1), h.toInt().coerceAtLeast(1)),
+            alpha = a.coerceAtMost(0.55f),
+            filterQuality = FilterQuality.Medium,
+        )
+    }
+}
 
 
 
@@ -217,8 +587,14 @@ fun OfficeCanvas(
     roomHighlight: Boolean = false,
     /** Live taskforce on the conference TV (null = TV off). */
     meetingTv: MeetingTv? = null,
+    /** Startup cutscene already played this session; skip straight to office. */
+    introPlayed: Boolean = false,
+    /** Fired once when the startup cutscene finishes. */
+    onIntroDone: (() -> Unit)? = null,
 ) {
-    val camera = remember { OfficeCamera() }
+    // Keyed on the intro: the viewport shrinks when the bureau UI appears,
+    // so the office refits instead of keeping the fullscreen framing.
+    val camera = remember(introPlayed) { OfficeCamera() }
     // TV clock: seconds since the meeting started; frame-driven only while on.
     var tvTime by remember { mutableFloatStateOf(0f) }
     val callOn = meetingTv == null && snapshot.confCall
@@ -234,6 +610,67 @@ fun OfficeCanvas(
     }
     val tvState = meetingTv?.let { TvState(tvTime, it.title, it.progress) }
         ?: if (callOn) TvState(tvTime, "Online meeting", 0, call = true) else null
+    // Startup cutscene: the aerial flies in toward the towers, then the
+    // clouds part onto the office. CITY/APPROACH run on timers; CLEAR waits
+    // for sprites. Taps skip one beat (CLEAR still waits).
+    var cutsceneDone by remember(introPlayed) { mutableStateOf(introPlayed) }
+    var approachStartMs by remember { mutableStateOf<Float?>(null) }
+    var revealStartMs by remember { mutableStateOf<Float?>(null) }
+    var cutMs by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(cutsceneDone) {
+        if (cutsceneDone) return@LaunchedEffect
+        val start = withFrameNanos { it }
+        while (true) {
+            withFrameNanos { now -> cutMs = (now - start) / 1_000_000f }
+        }
+    }
+    val beat = when {
+        cutsceneDone -> IntroBeat.DONE
+        revealStartMs != null -> IntroBeat.CLEAR
+        approachStartMs != null -> IntroBeat.APPROACH
+        else -> IntroBeat.CITY
+    }
+    val cityMs = minOf(cutMs, approachStartMs ?: cutMs)
+    if (approachStartMs == null && !cutsceneDone && introCityT(cityMs.toLong()) >= 1f) {
+        approachStartMs = cutMs
+    }
+    val approachMs = approachStartMs?.let { cutMs - it }
+    if (revealStartMs == null && approachMs != null && !cutsceneDone &&
+        introApproachT(approachMs.toLong()) >= 1f && ready
+    ) {
+        revealStartMs = cutMs
+    }
+    val revealing = beat == IntroBeat.CLEAR
+    val revealT = if (revealing) introRevealT((cutMs - (revealStartMs ?: cutMs)).toLong()) else 0f
+    if (revealing && revealT >= 1f) cutsceneDone = true
+    val latestOnIntroDone by rememberUpdatedState(onIntroDone)
+    LaunchedEffect(cutsceneDone) {
+        if (cutsceneDone && !introPlayed) latestOnIntroDone?.invoke()
+    }
+    val showOffice = ready && (revealing || cutsceneDone)
+    val introZoom = if (revealing) introOfficeZoom(revealT) else 1f
+    val context = LocalContext.current
+    val introArt = remember(context) {
+        IntroLayers(
+            base = decodeIntroBitmap(context, R.drawable.intro_city_base),
+            ships = listOf(
+                R.drawable.intro_ship_cruise,
+                R.drawable.intro_ship_ferrya,
+                R.drawable.intro_ship_ferryb,
+            ).map { decodeIntroBitmap(context, it) },
+            rim = decodeIntroBitmap(context, R.drawable.intro_wheel_rim),
+            legs = decodeIntroBitmap(context, R.drawable.intro_wheel_legs),
+            puffs = listOf(
+                R.drawable.intro_cloud_puff0,
+                R.drawable.intro_cloud_puff1,
+            ).mapNotNull { decodeIntroBitmap(context, it) },
+            bank = decodeIntroBitmap(context, R.drawable.intro_cloud_puff2),
+        )
+    }
+    val cloudSeeds = remember { introCloudSeeds() }
+    val driftSeeds = remember { introDriftSeeds() }
+    val sparkles = remember { introSparkles() }
+    val birds = remember { introBirds() }
     val latestOnTapRoom by rememberUpdatedState(onTapRoom)
     var userZoom by remember { mutableFloatStateOf(1f) }
     var pan by remember { mutableStateOf(Offset.Zero) }
@@ -274,9 +711,18 @@ fun OfficeCanvas(
                     pan = nextPan
                 }
             }
-            .pointerInput(ready) {
+            .pointerInput(ready, beat) {
                 detectTapGestures(
                     onDoubleTap = { tap ->
+                        if (!cutsceneDone) {
+                            // Double-tap skips the intro like a single tap.
+                            when (beat) {
+                                IntroBeat.CITY -> approachStartMs = cutMs
+                                IntroBeat.APPROACH -> if (ready) revealStartMs = cutMs
+                                IntroBeat.CLEAR, IntroBeat.DONE -> cutsceneDone = true
+                            }
+                            return@detectTapGestures
+                        }
                         // < ~2.0 → zoom to 2.0× centered on tap; already ≥~1.9 → reset.
                         if (userZoom >= 1.9f) {
                             userZoom = 1f
@@ -299,6 +745,14 @@ fun OfficeCanvas(
                         }
                     },
                     onTap = { tap ->
+                        if (!cutsceneDone) {
+                            when (beat) {
+                                IntroBeat.CITY -> approachStartMs = cutMs
+                                IntroBeat.APPROACH -> if (ready) revealStartMs = cutMs
+                                IntroBeat.CLEAR, IntroBeat.DONE -> cutsceneDone = true
+                            }
+                            return@detectTapGestures
+                        }
                         val hit = hitAgent(latestActors, camera, tap)
                         if (hit != null) {
                             latestOnTapAgent(hit)
@@ -309,25 +763,30 @@ fun OfficeCanvas(
                 )
             },
     ) {
-        drawRect(FloorVoid)
-        if (!ready) {
-            val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = android.graphics.Color.parseColor("#F3E6C8")
-                textAlign = Paint.Align.CENTER
-                textSize = 42f
-            }
-            drawContext.canvas.nativeCanvas.drawText(
-                "Opening the office…",
-                size.width / 2f,
-                size.height / 2f,
-                paint,
+        if (!showOffice) {
+            // CITY / APPROACH: the lively city, flying in toward the towers.
+            val approachT = approachMs?.let { introApproachT(it.toLong()) }
+            drawIntroCityLayers(
+                introArt,
+                cutMs.toLong(),
+                cityMs.toLong(),
+                approachMs?.toLong(),
+                approachT,
+                driftSeeds,
+                sparkles,
+                birds,
+            )
+            drawIntroCaption(
+                introCaptionText(beat) + ".".repeat(introDots(cutMs.toLong())),
+                1f,
             )
             return@Canvas
         }
+        drawRect(FloorVoid)
         val floor = sprites.get("tiles/floor")
         val tileW = floor?.width?.toFloat() ?: 96f
         val tileH = floor?.height?.toFloat() ?: 48f
-        camera.present(size.width, size.height, tileW, tileH, userZoom, pan)
+        camera.present(size.width, size.height, tileW, tileH, userZoom * introZoom, pan)
         val floorImage = floor?.asImageBitmap()
         for (y in 0 until OfficeMap.height) {
             for (x in 0 until OfficeMap.width) {
@@ -384,6 +843,18 @@ fun OfficeCanvas(
         // Final overlay pass: names + speech bubbles above every tile, prop, door and glass wall.
         for (actor in snapshot.actors.sortedBy { it.x + it.y }) {
             drawActor(actor, sprites, camera, labelPaint, bubblePaint, speechScale, overlay = true)
+        }
+        if (revealing) {
+            // CLEAR beat: clouds rush out over the settling office, flash first.
+            if (introArt.puffs.isNotEmpty()) {
+                drawCutsceneClouds(introArt.puffs, cloudSeeds, cutMs.toLong(), revealT)
+            }
+            val veil = introVeilAlpha(revealT)
+            if (veil > 0.01f) drawRect(Color.White.copy(alpha = veil))
+            drawIntroCaption(
+                introCaptionText(beat) + ".".repeat(introDots(cutMs.toLong())),
+                introCaptionAlpha(beat, revealT),
+            )
         }
     }
 }

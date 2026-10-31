@@ -32,7 +32,9 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -107,12 +109,15 @@ import app.pixelbureau.logic.agentHireSteam
 import app.pixelbureau.logic.agentHireTitleScale
 import app.pixelbureau.logic.heroTileLayout
 import app.pixelbureau.logic.candidatesNamed
+import app.pixelbureau.logic.formatHireWait
 import app.pixelbureau.logic.hireRoleFilters
+import app.pixelbureau.logic.hireWaitRemaining
 import app.pixelbureau.logic.OfficeMap
 import app.pixelbureau.logic.hiredLook
 import app.pixelbureau.logic.matches
 import app.pixelbureau.logic.workplace
 import kotlin.random.Random
+import kotlinx.coroutines.delay
 
 private val HireCard = RoundedCornerShape(18.dp)
 private val HireTile = RoundedCornerShape(14.dp)
@@ -176,8 +181,8 @@ private val roleIconRes = mapOf(
 )
 
 /**
- * Soft Kairosoft hire desk. Post a job, then the next bureau day HR brings
- * back 3–6 people from a mix of roles. Role chips filter that group.
+ * Soft Kairosoft hire desk. Post a job, then 5 minutes of phone time later HR
+ * brings back 3–6 people from a mix of roles. Role chips filter that group.
  * All Roles is the opening chip. A hire still needs a free desk and uses [hiredLook].
  */
 @Composable
@@ -189,12 +194,25 @@ internal fun PixelHirePage(
     val active = ui.agents.count { !it.archived }
     val cap = ui.bureau?.headcount ?: 1
     val stars = ui.bureau?.reputation ?: 0
-    val day = ui.bureau?.day
     val free = (cap - active).coerceAtLeast(0)
     val canOpen = cap < OfficeMap.deskCount && stars >= 1
     val canHire = free > 0
     val posting = ui.hirePosting
-    val waitingOnHr = posting.postedDay > 0 && !posting.delivered
+    val waitingOnHr = posting.postedAtMillis > 0L && !posting.delivered
+    var nowMillis by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(waitingOnHr, posting.postedAtMillis) {
+        if (!waitingOnHr) return@LaunchedEffect
+        while (true) {
+            nowMillis = System.currentTimeMillis()
+            delay(1_000)
+        }
+    }
+    val phoneNow = if (waitingOnHr && nowMillis < posting.postedAtMillis) {
+        System.currentTimeMillis()
+    } else {
+        nowMillis
+    }
+    val waitLabel = formatHireWait(hireWaitRemaining(posting, phoneNow))
 
     var query by remember { mutableStateOf("") }
     var role by remember { mutableStateOf(HireRoleAll) }
@@ -280,13 +298,13 @@ internal fun PixelHirePage(
             Text(
                 when {
                     waitingOnHr ->
-                        "Posted on day ${posting.postedDay}. HR is out recruiting. Candidates arrive on day ${posting.postedDay + 1}."
+                        "HR is out recruiting. Candidates arrive in $waitLabel."
                     posting.delivered && batch.isEmpty() ->
-                        "This batch has joined the bureau. Post another job and a new group arrives the next day."
+                        "This batch has joined the bureau. Post another job and a new group arrives in 5 minutes."
                     posting.delivered ->
-                        "This list is the group HR brought back. Post another job to start a new search. The current list clears, and a new group arrives the next day."
+                        "This list is the group HR brought back. Post another job to start a new search. The current list clears, and a new group arrives in 5 minutes."
                     else ->
-                        "Post a job. A day later, HR brings back 3 to 6 candidates from a mix of roles."
+                        "Post a job. In 5 minutes, HR brings back 3 to 6 candidates from a mix of roles."
                 },
                 color = KaiInkMuted,
                 style = MaterialTheme.typography.bodySmall,
@@ -295,11 +313,11 @@ internal fun PixelHirePage(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
                 SoftGameButton(
                     label = when {
-                        waitingOnHr -> "Waiting · day ${posting.postedDay + 1}"
+                        waitingOnHr -> "Waiting · $waitLabel"
                         posting.delivered -> "Post another job"
                         else -> "Post a job"
                     },
-                    enabled = day != null && !waitingOnHr,
+                    enabled = !waitingOnHr,
                     face = KaiAccent,
                     highlight = KaiAccentHi,
                     shadow = KaiAccentLo,
@@ -406,10 +424,10 @@ internal fun PixelHirePage(
             if (waiting.isEmpty()) {
                 Text(
                     when {
-                        posting.postedDay <= 0 ->
-                            "Post a job above. The list fills in a day later."
+                        posting.postedAtMillis <= 0L ->
+                            "Post a job above. The list fills in 5 minutes."
                         !posting.delivered ->
-                            "No candidates yet. HR reports back on day ${posting.postedDay + 1}."
+                            "No candidates yet. HR reports back in $waitLabel."
                         batch.isEmpty() ->
                             "Everyone from this posting is already on the team."
                         query.isNotBlank() ->

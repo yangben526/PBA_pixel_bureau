@@ -25,11 +25,14 @@ import app.pixelbureau.logic.workplace
 import app.pixelbureau.logic.HireBatchMax
 import app.pixelbureau.logic.HireBatchMin
 import app.pixelbureau.logic.HirePosting
+import app.pixelbureau.logic.HireWaitMillis
 import app.pixelbureau.logic.decodeHirePosting
 import app.pixelbureau.logic.deliverHireBatch
 import app.pixelbureau.logic.encodeHirePosting
+import app.pixelbureau.logic.formatHireWait
 import app.pixelbureau.logic.hireArrivalLine
 import app.pixelbureau.logic.hirePostingWithout
+import app.pixelbureau.logic.hireWaitRemaining
 import app.pixelbureau.logic.postHireJob
 import app.pixelbureau.logic.rollCandidatePool
 import app.pixelbureau.logic.rollMixedHireBatch
@@ -76,6 +79,9 @@ import app.pixelbureau.logic.grantChat
 import app.pixelbureau.logic.grantTaskStar
 import app.pixelbureau.logic.taskOrderBody
 import app.pixelbureau.logic.officeClock
+import app.pixelbureau.logic.OfficeClockState
+import app.pixelbureau.logic.OfficeWorkdayMillis
+import app.pixelbureau.logic.stepOfficeClock
 import app.pixelbureau.logic.parseCompletionBody
 import app.pixelbureau.logic.LlmTurn
 import app.pixelbureau.logic.ToolCall
@@ -745,6 +751,21 @@ class BureauLogicTest {
         assertEquals("9:00", officeClock(0))
         assertEquals("9:01", officeClock(1_000))
         assertEquals("10:00", officeClock(60_000))
+    }
+
+    @Test
+    fun officeClockKeepsRunningThroughAMenu() {
+        val start = OfficeClockState(day = 3, elapsedMillis = OfficeWorkdayMillis - 1_000)
+        // Menus pass paused = false. Only the background holds the clock.
+        val held = stepOfficeClock(start, deltaMillis = 1_000, paused = true)
+        assertEquals(3, held.day)
+        assertEquals("17:59", officeClock(held.elapsedMillis))
+        val next = stepOfficeClock(start, deltaMillis = 1_000, paused = false)
+        assertEquals(4, next.day)
+        assertEquals("9:00", officeClock(next.elapsedMillis))
+        val hour = stepOfficeClock(OfficeClockState(3, 0), deltaMillis = 60_000, paused = false)
+        assertEquals(3, hour.day)
+        assertEquals("10:00", officeClock(hour.elapsedMillis))
     }
 
     @Test
@@ -2010,15 +2031,24 @@ class BureauLogicTest {
     }
 
     @Test
-    fun postedJobArrivesNextDayAsAMixedBatch() {
+    fun postedJobArrivesAfterFivePhoneMinutes() {
+        assertEquals(5 * 60 * 1000L, HireWaitMillis)
         assertEquals(HirePosting(), postHireJob(0))
-        val posted = postHireJob(2)
-        assertEquals(2, posted.postedDay)
+        val postedAt = 1_700_000_000_000L
+        val posted = postHireJob(postedAt)
+        assertEquals(postedAt, posted.postedAtMillis)
         assertTrue(posted.names.isEmpty())
         assertFalse(posted.delivered)
-        assertEquals(posted, deliverHireBatch(posted, 2, Random(1)))
+        assertEquals("5:00", formatHireWait(hireWaitRemaining(posted, postedAt)))
+        assertEquals("0:01", formatHireWait(hireWaitRemaining(posted, postedAt + HireWaitMillis - 1)))
+        assertEquals(posted, deliverHireBatch(posted, postedAt + HireWaitMillis - 1, Random(1)))
 
-        val ready = deliverHireBatch(posted, 3, Random(4), avoid = setOf("Pixel", "Kai", "Byte"))
+        val ready = deliverHireBatch(
+            posted,
+            postedAt + HireWaitMillis,
+            Random(4),
+            avoid = setOf("Pixel", "Kai", "Byte"),
+        )
         assertTrue(ready.delivered)
         assertFalse(ready.seen)
         assertTrue(ready.names.size in HireBatchMin..HireBatchMax)
@@ -2035,6 +2065,10 @@ class BureauLogicTest {
         assertEquals(hired, decodeHirePosting(encodeHirePosting(hired)))
         assertEquals(HirePosting(), decodeHirePosting(null))
         assertEquals(HirePosting(), decodeHirePosting("nope"))
+        val legacy = decodeHirePosting("2|0|0|")
+        val fromLegacy = deliverHireBatch(legacy, postedAt, Random(3), avoid = setOf("Pixel", "Kai", "Byte"))
+        assertTrue(fromLegacy.delivered)
+        assertTrue(fromLegacy.names.size in HireBatchMin..HireBatchMax)
         assertEquals("There are 4 candidates for hire.", hireArrivalLine(4))
         assertEquals("There is 1 candidate for hire.", hireArrivalLine(1))
 

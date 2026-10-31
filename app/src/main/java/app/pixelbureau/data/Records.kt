@@ -147,6 +147,9 @@ interface BureauDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(bureau: Bureau)
+
+    @Query("UPDATE bureau SET day = day + :days WHERE id = 1")
+    suspend fun addDays(days: Int)
 }
 
 @Dao

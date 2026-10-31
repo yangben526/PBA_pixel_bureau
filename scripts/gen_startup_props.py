@@ -174,6 +174,8 @@ def save(im: Image.Image, name: str):
 # ---------------- individual props ----------------
 
 def gen_whiteboard():
+    # whiteboard.png is the supplied kanban board. Do not redraw it.
+    raise SystemExit("whiteboard.png is the supplied board sprite; this generator is retired")
     im = new_canvas()
     d = ImageDraw.Draw(im)
     ox, oy, s = CANVAS // 2, int(CANVAS * 0.62), 26 * HI
@@ -465,6 +467,8 @@ def gen_bookshelf():
 
 
 def gen_foosball():
+    # foosball.png is the supplied table. Do not redraw it.
+    raise SystemExit("foosball.png is the supplied table sprite; this generator is retired")
     im = new_canvas()
     d = ImageDraw.Draw(im)
     ox, oy, s = CANVAS // 2, int(CANVAS * 0.72), 26 * HI
@@ -706,12 +710,12 @@ def gen_plant2():
 
 def main():
     gens = [
-        gen_whiteboard,
+        # whiteboard.png is the supplied kanban board, not this generator.
         gen_beanbag,
         # watercooler.png is the supplied bottle sprite, not this generator.
         gen_fridge,
         # bookshelf.png is the supplied shelf sprite, not this generator.
-        gen_foosball,
+        # foosball.png is the supplied table, not this generator.
         gen_bike,
         gen_trash,
         gen_plant2,

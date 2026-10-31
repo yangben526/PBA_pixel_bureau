@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.displayCutout
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -39,12 +40,19 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import android.os.SystemClock
+import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -73,7 +81,19 @@ private val TabLabelActive = Color(0xFFE2A23A)
 fun BureauApp(model: BureauViewModel) {
     val ui by model.ui.collectAsStateWithLifecycle()
     var tab by rememberSaveable { mutableIntStateOf(0) }
-    var openBureau by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(false) }
+    var openBureau by remember { mutableStateOf(false) }
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    var clockMark by remember { mutableLongStateOf(SystemClock.elapsedRealtime()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1000)
+            val now = SystemClock.elapsedRealtime()
+            val delta = now - clockMark
+            clockMark = now
+            val resumed = lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+            model.advanceOfficeClock(delta, paused = !resumed)
+        }
+    }
     // Do not use WindowInsets.isImeVisible. On targetSdk 35 it stays true on some
     // tablets even with the keyboard closed, and this was the only tab switcher.
     // Hide only when the IME actually extends past the nav / task bar.
@@ -81,6 +101,8 @@ fun BureauApp(model: BureauViewModel) {
     val imeBottom = WindowInsets.ime.getBottom(density)
     val navBottom = WindowInsets.navigationBars.getBottom(density)
     val keyboardOpen = imeBottom > navBottom
+    // Startup cutscene owns the entire screen: no tabs, no insets padding.
+    val introFullscreen = tab == 0 && !ui.introPlayed
     Scaffold(
         containerColor = Ink,
         // Status bar + side cutout / side nav. Bottom inset is owned by the bar
@@ -95,7 +117,8 @@ fun BureauApp(model: BureauViewModel) {
         bottomBar = {
             // Hide the bar while the IME is up so chat composer can rise cleanly
             // without a stacked bottom-bar + imePadding black gap.
-            if (!keyboardOpen) {
+            // Also hidden while the startup cutscene owns the screen.
+            if (!keyboardOpen && !introFullscreen) {
                 CompactBottomBar(
                     selected = tab,
                     onSelect = { tab = it },
@@ -103,10 +126,14 @@ fun BureauApp(model: BureauViewModel) {
             }
         },
     ) { padding ->
-        val contentModifier = Modifier
-            .padding(padding)
-            .consumeWindowInsets(padding)
-            .imePadding()
+        val contentModifier = if (introFullscreen) {
+            Modifier.fillMaxSize()
+        } else {
+            Modifier
+                .padding(padding)
+                .consumeWindowInsets(padding)
+                .imePadding()
+        }
         when (tab) {
             0 -> OfficeScreen(model, contentModifier, onOpenBureau = { openBureau = true; tab = 1 })
             1 -> RosterScreen(model, contentModifier, onOpenOffice = { tab = 0 }, startOnBureau = openBureau.also { openBureau = false })

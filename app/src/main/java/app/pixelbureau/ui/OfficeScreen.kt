@@ -79,7 +79,6 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -121,7 +120,6 @@ import app.pixelbureau.logic.officeClock
 import app.pixelbureau.logic.taskOrderBody
 import app.pixelbureau.sprites.SpriteStore
 import java.util.UUID
-import kotlinx.coroutines.delay
 
 private val ChipShape = RoundedCornerShape(10.dp)
 private val ChatPanelShape = RoundedCornerShape(14.dp)
@@ -183,6 +181,64 @@ fun OfficeScreen(model: BureauViewModel, modifier: Modifier = Modifier, onOpenBu
     )
     val showMap = mapWeight > 0.001f
     var retryTask by remember { mutableStateOf<Task?>(null) }
+    var chatMenuOpen by remember(selected?.id) { mutableStateOf(false) }
+    var confirmClear by remember(selected?.id) { mutableStateOf(false) }
+
+    // Hoisted above the cutscene early-return so the attachment launchers
+    // register on first composition even while the intro owns the screen.
+    val canClear = selected != null && (ui.messages.isNotEmpty() || ui.streams[selected.id] != null)
+    val stream = selected?.let { ui.streams[it.id] }
+    val context = LocalContext.current
+
+    fun resolveDisplayName(uri: Uri): String {
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (idx >= 0) {
+                    val name = cursor.getString(idx)
+                    if (!name.isNullOrBlank()) return name
+                }
+            }
+        }
+        return uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "attachment"
+    }
+
+    val pickFiles = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenMultipleDocuments(),
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        model.addPendingAttachments(
+            uris.map { uri ->
+                PendingAttachment(
+                    id = UUID.randomUUID().toString(),
+                    uri = uri.toString(),
+                    name = resolveDisplayName(uri),
+                    kind = "file",
+                )
+            },
+        )
+    }
+    val pickImages = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(maxItems = 10),
+    ) { uris ->
+        if (uris.isEmpty()) return@rememberLauncherForActivityResult
+        model.addPendingAttachments(
+            uris.map { uri ->
+                PendingAttachment(
+                    id = UUID.randomUUID().toString(),
+                    uri = uri.toString(),
+                    name = resolveDisplayName(uri),
+                    kind = "image",
+                )
+            },
+        )
+    }
+
+    if (!ui.introPlayed) {
+        // Startup cutscene owns the entire screen; the bureau UI appears after it.
+        OfficeViewport(model, modifier.fillMaxSize())
+        return
+    }
 
     Column(
         modifier
@@ -194,67 +250,18 @@ fun OfficeScreen(model: BureauViewModel, modifier: Modifier = Modifier, onOpenBu
             ui.bureau?.reputation ?: 0,
             ui.bureau?.chatCredit ?: 0,
             ui.banner,
+            ui.officeClockMillis,
         )
         // Stay in the composition when the panel covers the floor, so zoom and
         // pan survive. A shorter map clips that framing instead of refitting.
         OfficeViewport(
             model,
-            if (showMap) {
+            modifier = if (showMap) {
                 Modifier.weight(mapWeight).fillMaxWidth()
             } else {
                 Modifier.fillMaxWidth().height(0.dp)
             },
         )
-
-        var confirmClear by remember(selected?.id) { mutableStateOf(false) }
-        var chatMenuOpen by remember(selected?.id) { mutableStateOf(false) }
-        val canClear = selected != null && (ui.messages.isNotEmpty() || ui.streams[selected.id] != null)
-        val stream = selected?.let { ui.streams[it.id] }
-        val context = LocalContext.current
-
-        fun resolveDisplayName(uri: Uri): String {
-            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-                if (cursor.moveToFirst()) {
-                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                    if (idx >= 0) {
-                        val name = cursor.getString(idx)
-                        if (!name.isNullOrBlank()) return name
-                    }
-                }
-            }
-            return uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "attachment"
-        }
-
-        val pickFiles = rememberLauncherForActivityResult(
-            ActivityResultContracts.OpenMultipleDocuments(),
-        ) { uris ->
-            if (uris.isEmpty()) return@rememberLauncherForActivityResult
-            model.addPendingAttachments(
-                uris.map { uri ->
-                    PendingAttachment(
-                        id = UUID.randomUUID().toString(),
-                        uri = uri.toString(),
-                        name = resolveDisplayName(uri),
-                        kind = "file",
-                    )
-                },
-            )
-        }
-        val pickImages = rememberLauncherForActivityResult(
-            ActivityResultContracts.PickMultipleVisualMedia(maxItems = 10),
-        ) { uris ->
-            if (uris.isEmpty()) return@rememberLauncherForActivityResult
-            model.addPendingAttachments(
-                uris.map { uri ->
-                    PendingAttachment(
-                        id = UUID.randomUUID().toString(),
-                        uri = uri.toString(),
-                        name = resolveDisplayName(uri),
-                        kind = "image",
-                    )
-                },
-            )
-        }
 
         // Agent selector chips — square tiles with face + name; selected gets amber glow + pointer.
         Row(
@@ -1411,18 +1418,11 @@ private fun PendingAttachmentChip(
 }
 
 @Composable
-private fun OfficeHeader(day: Int, reputation: Int, chatCredit: Int, banner: String?) {
-    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            now = System.currentTimeMillis()
-            delay(1000)
-        }
-    }
+private fun OfficeHeader(day: Int, reputation: Int, chatCredit: Int, banner: String?, clockMillis: Long) {
     Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
             Text(
-                "Day $day  ·  ${officeClock(now)}",
+                "Day $day  ·  ${officeClock(clockMillis)}",
                 color = Cream,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -1480,6 +1480,8 @@ private fun OfficeViewport(model: BureauViewModel, modifier: Modifier) {
             ui.taskforces.any { it.data.id == ui.selectedTaskforceId },
         meetingTv = ui.taskforces.firstOrNull { app.pixelbureau.logic.TaskforceStatus.isOpen(it.data.status) }
             ?.let { MeetingTv(it.data.title, it.data.progress) },
+        introPlayed = ui.introPlayed,
+        onIntroDone = { model.markIntroPlayed() },
     )
 }
 

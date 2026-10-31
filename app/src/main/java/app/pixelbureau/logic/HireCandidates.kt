@@ -67,42 +67,60 @@ fun candidatesForRole(role: String): List<HireCandidate> {
     }
 }
 
-/** Smallest next-day applicant group. */
+/** Smallest applicant group. */
 const val HireBatchMin = 3
 
-/** Largest next-day applicant group. */
+/** Largest applicant group. */
 const val HireBatchMax = 6
 
+/** Phone time from a job post until HR returns. Not bureau time. */
+const val HireWaitMillis = 5 * 60 * 1000L
+
 /**
- * One posted job. [postedDay] is the bureau day it was posted (0 = none).
- * [names] stay empty until the following day. [delivered] stays true after
- * that roll so hiring people off the list does not roll a new group.
- * [seen] is the HR dialog already dismissed.
+ * One posted job. [postedAtMillis] is phone time when it was posted (0 = none).
+ * [names] stay empty until [HireWaitMillis] has passed on the phone clock.
+ * [delivered] stays true after that roll so hiring people off the list does not
+ * roll a new group. [seen] is the HR dialog already dismissed.
  */
 data class HirePosting(
-    val postedDay: Int = 0,
+    val postedAtMillis: Long = 0,
     val names: List<String> = emptyList(),
     val delivered: Boolean = false,
     val seen: Boolean = false,
 )
 
-/** Start a search. Any previous group is replaced and arrives the next day. */
-fun postHireJob(day: Int): HirePosting {
-    if (day <= 0) return HirePosting()
-    return HirePosting(postedDay = day)
+/** Start a search. Any previous group is replaced and arrives in 5 phone minutes. */
+fun postHireJob(nowMillis: Long): HirePosting {
+    if (nowMillis <= 0L) return HirePosting()
+    return HirePosting(postedAtMillis = nowMillis)
+}
+
+/** Phone time still left before HR returns. Zero once the batch is in. */
+fun hireWaitRemaining(posting: HirePosting, nowMillis: Long): Long {
+    if (posting.postedAtMillis <= 0L || posting.delivered) return 0L
+    return (posting.postedAtMillis + HireWaitMillis - nowMillis).coerceAtLeast(0L)
+}
+
+/** Clock label for a wait, such as 5:00. Rounds up to the next second. */
+fun formatHireWait(millis: Long): String {
+    val sec = (millis.coerceAtLeast(0L) + 999L) / 1000L
+    val minutes = sec / 60
+    val seconds = sec % 60
+    return "$minutes:${seconds.toString().padStart(2, '0')}"
 }
 
 /**
- * On the day after a posting, roll [HireBatchMin]–[HireBatchMax] people from
- * more than one role. Later days do not re-roll a group that already arrived.
+ * Once [HireWaitMillis] of phone time has passed, roll [HireBatchMin]–[HireBatchMax]
+ * people from more than one role. A later check does not re-roll a group that
+ * already arrived. A saved bureau-day number from the old posting is already due.
  */
 fun deliverHireBatch(
     posting: HirePosting,
-    day: Int,
+    nowMillis: Long,
     random: Random = Random.Default,
     avoid: Set<String> = emptySet(),
 ): HirePosting {
-    if (posting.postedDay <= 0 || posting.delivered || day <= posting.postedDay) {
+    if (posting.postedAtMillis <= 0L || posting.delivered || nowMillis < posting.postedAtMillis + HireWaitMillis) {
         return posting
     }
     val rolled = rollMixedHireBatch(random, avoid)
@@ -157,11 +175,11 @@ fun rollMixedHireBatch(
     return picked.shuffled(random)
 }
 
-/** `postedDay|seen|delivered|Name,Name`. Blank is no posting. */
+/** `postedAtMillis|seen|delivered|Name,Name`. Blank is no posting. */
 fun encodeHirePosting(posting: HirePosting): String {
-    if (posting.postedDay <= 0 && posting.names.isEmpty() && !posting.delivered) return ""
+    if (posting.postedAtMillis <= 0L && posting.names.isEmpty() && !posting.delivered) return ""
     return listOf(
-        posting.postedDay.toString(),
+        posting.postedAtMillis.toString(),
         if (posting.seen) "1" else "0",
         if (posting.delivered) "1" else "0",
         posting.names.joinToString(","),
@@ -172,10 +190,10 @@ fun decodeHirePosting(raw: String?): HirePosting {
     if (raw.isNullOrBlank()) return HirePosting()
     val parts = raw.split('|', limit = 4)
     if (parts.size < 4) return HirePosting()
-    val day = parts[0].toIntOrNull() ?: return HirePosting()
+    val postedAt = parts[0].toLongOrNull() ?: return HirePosting()
     val names = parts[3].split(',').map { it.trim() }.filter { it.isNotEmpty() }
     return HirePosting(
-        postedDay = day,
+        postedAtMillis = postedAt,
         names = names,
         seen = parts[1] == "1",
         delivered = parts[2] == "1",

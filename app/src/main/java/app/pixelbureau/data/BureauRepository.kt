@@ -258,6 +258,13 @@ class BureauRepository(private val db: BureauDatabase) {
         writeScore(current, grantTaskforceSignOff(current.toScore(), alreadyAwarded = false, steps = steps))
     }
 
+    /** Finished workdays from the floor clock. Does not touch stars. */
+    suspend fun addBureauDays(days: Int) {
+        if (days > 0) {
+            bureau.addDays(days)
+        }
+    }
+
     /** One successful office chat. Twelve of these add a star. A task reply does not call this. */
     suspend fun noteChat() {
         val current = bureau.get() ?: return
