@@ -184,62 +184,6 @@ fun OfficeScreen(model: BureauViewModel, modifier: Modifier = Modifier, onOpenBu
     var chatMenuOpen by remember(selected?.id) { mutableStateOf(false) }
     var confirmClear by remember(selected?.id) { mutableStateOf(false) }
 
-    // Hoisted above the cutscene early-return so the attachment launchers
-    // register on first composition even while the intro owns the screen.
-    val canClear = selected != null && (ui.messages.isNotEmpty() || ui.streams[selected.id] != null)
-    val stream = selected?.let { ui.streams[it.id] }
-    val context = LocalContext.current
-
-    fun resolveDisplayName(uri: Uri): String {
-        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
-            if (cursor.moveToFirst()) {
-                val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (idx >= 0) {
-                    val name = cursor.getString(idx)
-                    if (!name.isNullOrBlank()) return name
-                }
-            }
-        }
-        return uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "attachment"
-    }
-
-    val pickFiles = rememberLauncherForActivityResult(
-        ActivityResultContracts.OpenMultipleDocuments(),
-    ) { uris ->
-        if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        model.addPendingAttachments(
-            uris.map { uri ->
-                PendingAttachment(
-                    id = UUID.randomUUID().toString(),
-                    uri = uri.toString(),
-                    name = resolveDisplayName(uri),
-                    kind = "file",
-                )
-            },
-        )
-    }
-    val pickImages = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickMultipleVisualMedia(maxItems = 10),
-    ) { uris ->
-        if (uris.isEmpty()) return@rememberLauncherForActivityResult
-        model.addPendingAttachments(
-            uris.map { uri ->
-                PendingAttachment(
-                    id = UUID.randomUUID().toString(),
-                    uri = uri.toString(),
-                    name = resolveDisplayName(uri),
-                    kind = "image",
-                )
-            },
-        )
-    }
-
-    if (!ui.introPlayed) {
-        // Startup cutscene owns the entire screen; the bureau UI appears after it.
-        OfficeViewport(model, modifier.fillMaxSize())
-        return
-    }
-
     Column(
         modifier
             .fillMaxSize()
@@ -262,6 +206,54 @@ fun OfficeScreen(model: BureauViewModel, modifier: Modifier = Modifier, onOpenBu
                 Modifier.fillMaxWidth().height(0.dp)
             },
         )
+
+        val canClear = selected != null && (ui.messages.isNotEmpty() || ui.streams[selected.id] != null)
+        val stream = selected?.let { ui.streams[it.id] }
+        val context = LocalContext.current
+
+        fun resolveDisplayName(uri: Uri): String {
+            context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val idx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (idx >= 0) {
+                        val name = cursor.getString(idx)
+                        if (!name.isNullOrBlank()) return name
+                    }
+                }
+            }
+            return uri.lastPathSegment?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "attachment"
+        }
+
+        val pickFiles = rememberLauncherForActivityResult(
+            ActivityResultContracts.OpenMultipleDocuments(),
+        ) { uris ->
+            if (uris.isEmpty()) return@rememberLauncherForActivityResult
+            model.addPendingAttachments(
+                uris.map { uri ->
+                    PendingAttachment(
+                        id = UUID.randomUUID().toString(),
+                        uri = uri.toString(),
+                        name = resolveDisplayName(uri),
+                        kind = "file",
+                    )
+                },
+            )
+        }
+        val pickImages = rememberLauncherForActivityResult(
+            ActivityResultContracts.PickMultipleVisualMedia(maxItems = 10),
+        ) { uris ->
+            if (uris.isEmpty()) return@rememberLauncherForActivityResult
+            model.addPendingAttachments(
+                uris.map { uri ->
+                    PendingAttachment(
+                        id = UUID.randomUUID().toString(),
+                        uri = uri.toString(),
+                        name = resolveDisplayName(uri),
+                        kind = "image",
+                    )
+                },
+            )
+        }
 
         // Agent selector chips — square tiles with face + name; selected gets amber glow + pointer.
         Row(

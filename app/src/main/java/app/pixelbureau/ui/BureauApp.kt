@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.displayCutout
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -101,8 +100,6 @@ fun BureauApp(model: BureauViewModel) {
     val imeBottom = WindowInsets.ime.getBottom(density)
     val navBottom = WindowInsets.navigationBars.getBottom(density)
     val keyboardOpen = imeBottom > navBottom
-    // Startup cutscene owns the entire screen: no tabs, no insets padding.
-    val introFullscreen = tab == 0 && !ui.introPlayed
     Scaffold(
         containerColor = Ink,
         // Status bar + side cutout / side nav. Bottom inset is owned by the bar
@@ -117,8 +114,7 @@ fun BureauApp(model: BureauViewModel) {
         bottomBar = {
             // Hide the bar while the IME is up so chat composer can rise cleanly
             // without a stacked bottom-bar + imePadding black gap.
-            // Also hidden while the startup cutscene owns the screen.
-            if (!keyboardOpen && !introFullscreen) {
+            if (!keyboardOpen) {
                 CompactBottomBar(
                     selected = tab,
                     onSelect = { tab = it },
@@ -126,14 +122,10 @@ fun BureauApp(model: BureauViewModel) {
             }
         },
     ) { padding ->
-        val contentModifier = if (introFullscreen) {
-            Modifier.fillMaxSize()
-        } else {
-            Modifier
-                .padding(padding)
-                .consumeWindowInsets(padding)
-                .imePadding()
-        }
+        val contentModifier = Modifier
+            .padding(padding)
+            .consumeWindowInsets(padding)
+            .imePadding()
         when (tab) {
             0 -> OfficeScreen(model, contentModifier, onOpenBureau = { openBureau = true; tab = 1 })
             1 -> RosterScreen(model, contentModifier, onOpenOffice = { tab = 0 }, startOnBureau = openBureau.also { openBureau = false })

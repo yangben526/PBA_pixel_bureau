@@ -272,8 +272,8 @@ data class IntroShipLane(
  */
 val IntroShipLanes = listOf(
     IntroShipLane(1133f, 618f, 1058f, 618f),
-    IntroShipLane(1029.5f, 513f, 943f, 509f),
-    IntroShipLane(963f, 563.5f, 884f, 557f),
+    IntroShipLane(1029.5f, 513f, 968f, 515f),
+    IntroShipLane(963f, 563.5f, 905f, 559f),
 )
 
 /** Ms over which the lanes play: the whole CITY + APPROACH flight. */

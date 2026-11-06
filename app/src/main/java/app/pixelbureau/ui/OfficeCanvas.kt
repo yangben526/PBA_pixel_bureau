@@ -592,9 +592,7 @@ fun OfficeCanvas(
     /** Fired once when the startup cutscene finishes. */
     onIntroDone: (() -> Unit)? = null,
 ) {
-    // Keyed on the intro: the viewport shrinks when the bureau UI appears,
-    // so the office refits instead of keeping the fullscreen framing.
-    val camera = remember(introPlayed) { OfficeCamera() }
+    val camera = remember { OfficeCamera() }
     // TV clock: seconds since the meeting started; frame-driven only while on.
     var tvTime by remember { mutableFloatStateOf(0f) }
     val callOn = meetingTv == null && snapshot.confCall
